@@ -61,7 +61,7 @@ if(EXISTS ${_arena_sdk_conf})
 		${arena_sdk_installation_root}/lib64/libarena.so
 		${arena_sdk_installation_root}/lib64/libsave.so
 		${arena_sdk_installation_root}/lib64/libgentl.so
-		#${arena_sdk_installation_root}/lib64/liblucidlog.so
+		${arena_sdk_installation_root}/lib64/liblucidlog.so
 
 		## debug
 		#${arena_sdk_installation_root}/lib64/libarenad.so
@@ -92,7 +92,7 @@ if(EXISTS ${_arena_sdk_conf})
 		${arena_sdk_installation_root}/lib64/libarena.so
 		${arena_sdk_installation_root}/lib64/libsave.so
 		${arena_sdk_installation_root}/lib64/libgentl.so
-		#${arena_sdk_installation_root}/lib64/liblucidlog.so
+		${arena_sdk_installation_root}/lib64/liblucidlog.so
 
 		## debug
 		#${arena_sdk_installation_root}/lib64/libarenad.so

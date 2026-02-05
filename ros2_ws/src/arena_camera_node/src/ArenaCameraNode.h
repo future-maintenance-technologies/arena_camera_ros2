@@ -84,6 +84,8 @@ class ArenaCameraNode : public rclcpp::Node
   std::string pub_qos_reliability_;
   bool is_passed_pub_qos_reliability_;
 
+  std::string frame_id_;
+
   void parse_parameters_();
   void initialize_();
 

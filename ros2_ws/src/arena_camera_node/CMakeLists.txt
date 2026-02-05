@@ -48,6 +48,7 @@ find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(arena_sdk REQUIRED)
+find_package(OpenCV REQUIRED)
 
 # ------------
 # EXPORT DEPS
@@ -144,6 +145,9 @@ ament_target_dependencies(${target_name}  rclcpp
                                           sensor_msgs
                                           arena_sdk
                                           )
+target_link_libraries(${target_name}
+  ${OpenCV_LIBRARIES}
+)
 
 
 # MV EXEC to lib dir
