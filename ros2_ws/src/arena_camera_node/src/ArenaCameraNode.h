@@ -17,6 +17,10 @@
 #include <sensor_msgs/msg/image.hpp>  //image msg published
 #include <std_srvs/srv/trigger.hpp>   // Trigger
 
+// image transport
+#include "cv_bridge/cv_bridge.hpp"
+#include "image_transport/image_transport.hpp"
+
 // arena sdk
 #include "ArenaApi.h"
 
@@ -47,6 +51,8 @@ class ArenaCameraNode : public rclcpp::Node
  private:
   std::shared_ptr<Arena::ISystem> m_pSystem;
   std::shared_ptr<Arena::IDevice> m_pDevice;
+
+  std::shared_ptr<image_transport::Publisher> m_it_pub_;
 
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr m_pub_;
   rclcpp::TimerBase::SharedPtr m_wait_for_device_timer_callback_;

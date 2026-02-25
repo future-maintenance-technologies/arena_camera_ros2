@@ -204,6 +204,9 @@ void ArenaCameraNode::initialize_()
                                                                   .reliability]
                << '\n';
 
+  m_it_pub_ = std::make_shared<image_transport::Publisher>(
+    image_transport::create_publisher(this, topic_, pub_qos_profile));
+
   log_info(pub_qos_info.str());
 }
 
@@ -233,47 +236,32 @@ void ArenaCameraNode::wait_for_device_timer_callback_()
 }
 
 void ArenaCameraNode::run_()
-// {
-//   auto device = create_device_ros_();
-//   m_pDevice.reset(device);
-//   set_nodes_();
-//   m_pDevice->StartStream();
-
-//   if (!trigger_mode_activated_) {
-//     publish_images_();
-//   } else {
-//     // else ros::spin will
-//   }
-// }
-
-  {
-    auto device = create_device_ros_();
-    m_pDevice.reset(device);
-    set_nodes_();
-    m_pDevice->StartStream();
-    // std::cout << "between start stream and publish" << "\n";
-    publish_images_();
-
-    
-  }
-
-
-
-
+{
+  auto device = create_device_ros_();
+  m_pDevice.reset(device);
+  set_nodes_();
+  m_pDevice->StartStream();
+  // std::cout << "between start stream and publish" << "\n";
+  // if (!trigger_mode_activated_) {
+  publish_images_();
+  //   } else {
+  //     // else ros::spin will
+  //   }
+}
 
 void ArenaCameraNode::publish_images_()
 {
   Arena::IImage* pImage = nullptr;
   while (rclcpp::ok()) {
     try {
-      auto p_image_msg = std::make_unique<sensor_msgs::msg::Image>();
       // std::cout << "error 1" << "\n";
       pImage = m_pDevice->GetImage(999999999999); //time before timeout 
       // std::cout << "error 2" << "\n";
+      auto p_image_msg = std::make_unique<sensor_msgs::msg::Image>();
       msg_form_image_(pImage, *p_image_msg);
       // std::cout << "error 3" << "\n";
 
-      m_pub_->publish(std::move(p_image_msg));
+      m_it_pub_->publish(std::move(p_image_msg));
 
       log_debug(std::string("image ") + std::to_string(pImage->GetFrameId()) +
                " published to " + topic_);
@@ -289,36 +277,6 @@ void ArenaCameraNode::publish_images_()
     }
   };
 }
-
-// {
-//   Arena::IImage* pImage = nullptr;
-//   while (rclcpp::ok()) {
-//     try {
-//       pImage = m_pDevice->GetImage(1000);
-
-//       if (!pImage) {
-//         continue;
-//       }
-
-//       auto p_image_msg = std::make_unique<sensor_msgs::msg::Image>();
-//       msg_form_image_(pImage, *p_image_msg);
-      
-      
-//       m_pub_->publish(std::move(p_image_msg));
-//       m_pDevice->RequeueBuffer(pImage);
-//       pImage = nullptr
-
-//     } catch (std::exception& e) {
-//       if (pImage) {
-//         m_pDevice->RequeueBuffer(pImage);
-//         pImage = nullptr;
-//       }
-//       log_warn(std::string("Exception occurred while publishing an image\n") +
-//                  e.what());
-//     }
-//   };
-// }
-
 
 void ArenaCameraNode::msg_form_image_(Arena::IImage* pImage,
                                       sensor_msgs::msg::Image& image_msg)
@@ -423,7 +381,7 @@ void ArenaCameraNode::publish_an_image_on_trigger_(
     auto msg = std::string("image ") + std::to_string(pImage->GetFrameId()) +
                " published to " + topic_;
     msg_form_image_(pImage, *p_image_msg);
-    m_pub_->publish(std::move(p_image_msg));
+    m_it_pub_->publish(std::move(p_image_msg));
     response->message = msg;
     response->success = true;
 
