@@ -50,6 +50,26 @@ find_package(sensor_msgs REQUIRED)
 find_package(arena_sdk REQUIRED)
 find_package(OpenCV REQUIRED)
 
+# --------------------
+# RUNTIME LIBRARY PATH
+# --------------------
+
+# Set Arena SDK library paths
+set(ARENA_SDK_LIB_PATH "/home/fmt/dev/ArenaViewMP_Linux_x64/ArenaSDK_Linux_x64")
+set(ARENA_RPATH_DIRS
+    "${ARENA_SDK_LIB_PATH}/lib64"
+    "${ARENA_SDK_LIB_PATH}/GenICam/library/lib/Linux64_x64"
+    "${ARENA_SDK_LIB_PATH}/ffmpeg"
+    "${ARENA_SDK_LIB_PATH}/Metavision/lib"
+    "${ARENA_SDK_LIB_PATH}/OpenCV/lib"
+)
+
+# Configure RPATH settings
+set(CMAKE_SKIP_BUILD_RPATH FALSE)
+set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+set(CMAKE_INSTALL_RPATH "${ARENA_RPATH_DIRS}")
+
 # ------------
 # EXPORT DEPS
 # ------------
