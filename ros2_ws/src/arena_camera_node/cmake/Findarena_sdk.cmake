@@ -3,7 +3,7 @@ set(_LOG_LVL DEBUG) # does not filter as it should
 set(_LOG_LVL_FRMT "-- [ ${_LOG_LVL} ] ")
 
 # the installation script place
-set(_arena_sdk_conf "/etc/ld.so.conf.d/Arena_SDK.conf")
+set(_arena_sdk_conf "/home/fmt/dev/workspace/arena_camera_ros2/resources/ArenaSDK/Arena_SDK.conf")
 
 
 if(EXISTS ${_arena_sdk_conf})
@@ -16,7 +16,7 @@ if(EXISTS ${_arena_sdk_conf})
 	# parent direcotry of the first path which suppose to be the location of
 	# the installed ArenaSDK
 	execute_process(
-		COMMAND bash -c "dirname $(head -n 1 \"/etc/ld.so.conf.d/Arena_SDK.conf\")"
+		COMMAND bash -c "dirname $(head -n 1 \"${_arena_sdk_conf}\")"
 		OUTPUT_VARIABLE arena_sdk_installation_root
 		#ENCODING UTF8
 		)
