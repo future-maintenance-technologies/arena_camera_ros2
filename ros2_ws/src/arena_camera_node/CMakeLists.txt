@@ -70,6 +70,15 @@ set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 set(CMAKE_INSTALL_RPATH "${ARENA_RPATH_DIRS}")
 
+# Add link directories for build-time linking
+link_directories(
+    "${ARENA_SDK_LIB_PATH}/lib64"
+    "${ARENA_SDK_LIB_PATH}/GenICam/library/lib/Linux64_x64"
+    "${ARENA_SDK_LIB_PATH}/ffmpeg"
+    "${ARENA_SDK_LIB_PATH}/Metavision/lib"
+    "${ARENA_SDK_LIB_PATH}/OpenCV/lib"
+)
+
 # ------------
 # EXPORT DEPS
 # ------------
