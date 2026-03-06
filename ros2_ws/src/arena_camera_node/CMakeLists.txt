@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.15)
 
+# Use Intel ICPX compiler with SYCL support
+set(CMAKE_C_COMPILER icx)
+set(CMAKE_CXX_COMPILER icpx)
+
 project(arena_camera_node)
 
 # Default to C99
@@ -7,10 +11,16 @@ if(NOT CMAKE_C_STANDARD)
   set(CMAKE_C_STANDARD 99)
 endif()
 
-# Default to C++14
+# Default to C++17 (required by SYCL)
 if(NOT CMAKE_CXX_STANDARD)
-  set(CMAKE_CXX_STANDARD 14)
+  set(CMAKE_CXX_STANDARD 17)
 endif()
+
+# SYCL flags
+set(SYCL_FLAGS "-fsycl")
+
+add_compile_options(${SYCL_FLAGS})
+add_link_options(${SYCL_FLAGS})
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 	# linked GenICam hearders give warnings No such file or directory
@@ -49,6 +59,13 @@ find_package(std_srvs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(arena_sdk REQUIRED)
 find_package(OpenCV REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(FFMPEG REQUIRED
+  libavcodec
+  libavutil
+  libavformat
+  libswscale
+)
 
 # --------------------
 # RUNTIME LIBRARY PATH
@@ -145,16 +162,19 @@ add_executable(${target_name}
     src/light_arena/deviceinfo_helper.cpp
     src/rclcpp_adapter/pixelformat_translation.cpp
     src/rclcpp_adapter/quilty_of_service_translation.cpp
+    src/gpu_compressor.cpp
+    src/qsv_encoder.cpp
 )
 
 # HEADERS DEP
-#target_include_directories(${target_name}
-  #PRIVATE
-    #${arena_sdk_INCLUDE_DIRS}
-#  PUBLIC
-    #$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    #$<INSTALL_INTERFACE:include>
-#)
+target_include_directories(${target_name}
+  PRIVATE
+    ${arena_sdk_INCLUDE_DIRS}
+    ${FFMPEG_INCLUDE_DIRS}
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
 
 # CPP -> .a file
 # creates :
@@ -176,6 +196,7 @@ ament_target_dependencies(${target_name}  rclcpp
                                           )
 target_link_libraries(${target_name}
   ${OpenCV_LIBRARIES}
+  ${FFMPEG_LINK_LIBRARIES}
 )
 
 
