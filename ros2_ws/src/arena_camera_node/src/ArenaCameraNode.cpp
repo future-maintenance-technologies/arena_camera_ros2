@@ -346,6 +346,7 @@ void ArenaCameraNode::compress_publish_consumer_()
   while (frame_queue_.dequeue(pixel_data, timestamp_ns, frame_id,
                               is_big_endian, bits_per_pixel, data_width)) {
     try {
+      if (pixelformat_ros_ == "bayer_rggb8") {
       // -- Compress to AV1 (reads pixel_data via pointer, no copy) ----------
       bool compressed_ok = false;
       auto compressed_msg = std::make_unique<sensor_msgs::msg::CompressedImage>();
@@ -369,26 +370,26 @@ void ArenaCameraNode::compress_publish_consumer_()
         log_warn(std::string("Compression failed: ") + e.what());
       }
 
-      // -- Build and publish raw Image message (move pixel_data in) ---------
-      // auto image_msg = std::make_unique<sensor_msgs::msg::Image>();
-      // image_msg->header.stamp.sec     = static_cast<uint32_t>(timestamp_ns / 1000000000);
-      // image_msg->header.stamp.nanosec = static_cast<uint32_t>(timestamp_ns % 1000000000);
-      // image_msg->header.frame_id      = frame_id_;
-      // image_msg->height               = height_;
-      // image_msg->width                = width_;
-      // image_msg->encoding             = pixelformat_ros_;
-      // image_msg->is_bigendian         = is_big_endian;
-      // image_msg->step = static_cast<sensor_msgs::msg::Image::_step_type>(
-      //     data_width * (bits_per_pixel / 8));
-      // image_msg->data = std::move(pixel_data);
-
-      // m_pub_->publish(std::move(image_msg));
-
       if (compressed_ok) {
         m_pub_compressed_->publish(std::move(compressed_msg));
         frames_published_.fetch_add(1, std::memory_order_relaxed);
       }
+      } else {
+        // -- Build and publish raw Image message (move pixel_data in) ---------
+        auto image_msg = std::make_unique<sensor_msgs::msg::Image>();
+        image_msg->header.stamp.sec     = static_cast<uint32_t>(timestamp_ns / 1000000000);
+        image_msg->header.stamp.nanosec = static_cast<uint32_t>(timestamp_ns % 1000000000);
+        image_msg->header.frame_id      = frame_id_;
+        image_msg->height               = height_;
+        image_msg->width                = width_;
+        image_msg->encoding             = pixelformat_ros_;
+        image_msg->is_bigendian         = is_big_endian;
+        image_msg->step = static_cast<sensor_msgs::msg::Image::_step_type>(
+            data_width * (bits_per_pixel / 8));
+        image_msg->data = std::move(pixel_data);
 
+        m_pub_->publish(std::move(image_msg));
+      }
     } catch (std::exception& e) {
       log_warn(std::string("Consumer: ") + e.what());
     }
