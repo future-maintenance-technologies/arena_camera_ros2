@@ -70,8 +70,11 @@ void ArenaCameraNode::parse_parameters_()
     frame_id_ = this->declare_parameter("frame_id", "camera_frame");
 
     nextParameterToDeclare = "qsv_device";
-    qsv_device_ = this->declare_parameter("qsv_device", "/dev/dri/renderD129");
-
+    qsv_device_ = this->declare_parameter("qsv_device", "");
+    if (qsv_device_ == "") {
+      throw std::invalid_argument("QSV Device must be provided");
+    }
+    
   } catch (rclcpp::ParameterTypeException& e) {
     log_err(nextParameterToDeclare + " argument");
     throw;
