@@ -20,9 +20,9 @@ public:
     /// @param width        Frame width  (must match input NV12 data).
     /// @param height       Frame height (must match input NV12 data).
     /// @param framerate    Used for time_base/framerate codec settings.
-    /// @param qsv_device   QSV device path (e.g. "/dev/dri/renderD128").
+    /// @param qsv_device   QSV device path (e.g. "/dev/dri/renderD129" for Intel).
     QsvAv1Encoder(int width, int height, int framerate = 22,
-                  const char* qsv_device = "/dev/dri/renderD128");
+                  const char* qsv_device = "/dev/dri/renderD129");
     ~QsvAv1Encoder();
 
     QsvAv1Encoder(const QsvAv1Encoder&) = delete;

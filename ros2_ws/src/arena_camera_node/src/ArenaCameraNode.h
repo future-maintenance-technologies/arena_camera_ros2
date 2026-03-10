@@ -59,9 +59,10 @@ class ArenaCameraNode : public rclcpp::Node
   std::shared_ptr<Arena::ISystem> m_pSystem;
   std::shared_ptr<Arena::IDevice> m_pDevice;
 
-  // ---- ROS publishers / timers / services ----------------------------------
-  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr         m_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr m_pub_compressed_;
+  // ---- Publishers / publisher QoS ----------------------------------------
+  rclcpp::QoS                                                      pub_qos_{1};
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr            m_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr  m_pub_compressed_;
   rclcpp::TimerBase::SharedPtr   m_wait_for_device_timer_callback_;
   rclcpp::TimerBase::SharedPtr   m_telemetry_timer_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr m_trigger_an_image_srv_;
@@ -116,6 +117,8 @@ class ArenaCameraNode : public rclcpp::Node
   bool        is_passed_pub_qos_reliability_;
 
   std::string frame_id_;
+
+  std::string qsv_device_;  ///< DRI render node for Intel QSV (e.g. /dev/dri/renderD129)
 
   // ---- Private methods -----------------------------------------------------
   void parse_parameters_();

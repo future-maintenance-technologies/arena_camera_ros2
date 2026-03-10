@@ -68,7 +68,10 @@ void ArenaCameraNode::parse_parameters_()
 
     nextParameterToDeclare = "frame_id";
     frame_id_ = this->declare_parameter("frame_id", "camera_frame");
-    
+
+    nextParameterToDeclare = "qsv_device";
+    qsv_device_ = this->declare_parameter("qsv_device", "/dev/dri/renderD129");
+
   } catch (rclcpp::ParameterTypeException& e) {
     log_err(nextParameterToDeclare + " argument");
     throw;
@@ -136,11 +139,11 @@ void ArenaCameraNode::initialize_()
     false // avoid ros namespace conventions
   };
   */
-  rclcpp::SensorDataQoS pub_qos_;
+  rclcpp::SensorDataQoS pub_qos;
   // QoS history
   if (is_passed_pub_qos_history_) {
     if (is_supported_qos_histroy_policy(pub_qos_history_)) {
-      pub_qos_.history(
+      pub_qos.history(
           K_CMDLN_PARAMETER_TO_QOS_HISTORY_POLICY[pub_qos_history_]);
     } else {
       log_err(pub_qos_history_ + " is not supported for this node");
@@ -157,13 +160,13 @@ void ArenaCameraNode::initialize_()
           RMW_QOS_POLICY_HISTORY_KEEP_LAST) {
     // TODO
     // test err msg withwhen -1
-    pub_qos_.keep_last(pub_qos_history_depth_);
+    pub_qos.keep_last(pub_qos_history_depth_);
   }
 
   // Qos reliability
   if (is_passed_pub_qos_reliability_) {
     if (is_supported_qos_reliability_policy(pub_qos_reliability_)) {
-      pub_qos_.reliability(
+      pub_qos.reliability(
           K_CMDLN_PARAMETER_TO_QOS_RELIABILITY_POLICY[pub_qos_reliability_]);
     } else {
       log_err(pub_qos_reliability_ + " is not supported for this node");
@@ -171,15 +174,13 @@ void ArenaCameraNode::initialize_()
     }
   }
 
-  // rmw_qos_history_policy_t history_policy_ = RMW_QOS_
-  // rmw_qos_history_policy_t;
-  // auto pub_qos_init = rclcpp::QoSInitialization(history_policy_, );
+  // Save resolved QoS so run_() can use it when creating the publisher.
+  pub_qos_ = pub_qos;
 
-  m_pub_ = this->create_publisher<sensor_msgs::msg::Image>(
-      this->get_parameter("topic").as_string(), pub_qos_);
-
-  m_pub_compressed_ = this->create_publisher<sensor_msgs::msg::CompressedImage>(
-    this->get_parameter("topic").as_string() + "/compressed", pub_qos_);
+  // Publishers are created in run_() once pixelformat_ros_ is finalised by
+  // set_nodes_pixelformat_().  Only one publisher (raw OR compressed) is
+  // created, which prevents the "multiple types on the same topic" error that
+  // occurs when both publishers advertise on the DDS graph simultaneously.
 
   std::stringstream pub_qos_info;
   auto pub_qos_profile = pub_qos_.get_rmw_qos_profile();
@@ -271,9 +272,21 @@ void ArenaCameraNode::run_()
   m_pDevice.reset(device);
   set_nodes_();
 
-  compressor_ = std::make_unique<GpuCompressor>(width_, height_);
-  RCLCPP_INFO(this->get_logger(), "GPU compressor initialized on: %s",
-              compressor_->device_name().c_str());
+  // Create only the publisher that matches the chosen pixelformat.
+  auto topic_str = this->get_parameter("topic").as_string();
+  if (pixelformat_ros_ == "bayer_rggb8" || pixelformat_ros_ == "mono8") {
+    log_info("Initializing GPU compressor for AV1 encoding...");
+    log_info(std::string("Using QSV device: ") + qsv_device_);
+    compressor_ = std::make_unique<GpuCompressor>(width_, height_, 22, qsv_device_.c_str());
+    RCLCPP_INFO(this->get_logger(), "GPU compressor initialized on: %s",
+                compressor_->device_name().c_str());
+    m_pub_compressed_ = this->create_publisher<sensor_msgs::msg::CompressedImage>(
+        topic_str + "/compressed", pub_qos_);
+    log_info(std::string("Publishing CompressedImage on: ") + topic_str + "/compressed");
+    // Also create raw publisher for debug inspection
+    m_pub_ = this->create_publisher<sensor_msgs::msg::Image>(topic_str, pub_qos_);
+    log_info(std::string("Publishing raw Image (debug) on: ") + topic_str);
+  }
 
   using namespace std::chrono_literals;
   m_telemetry_timer_ = this->create_wall_timer(
@@ -360,7 +373,7 @@ void ArenaCameraNode::compress_publish_consumer_()
         }
 
         try {
-          auto av1 = compressor_->compress(pixel_data.data(), timestamp_ns);
+          auto av1 = compressor_->compress(pixel_data.data(), pixelformat_ros_, timestamp_ns);
           if (av1) {
             compressed_msg->data = std::move(*av1);
             frames_compressed_.fetch_add(1, std::memory_order_relaxed);
@@ -378,7 +391,7 @@ void ArenaCameraNode::compress_publish_consumer_()
           m_pub_compressed_->publish(std::move(compressed_msg));
           frames_published_.fetch_add(1, std::memory_order_relaxed);
         }
-      } else {
+      } 
         // -- Build and publish raw Image message (move pixel_data in) ---------
         auto image_msg = std::make_unique<sensor_msgs::msg::Image>();
         image_msg->header.stamp.sec     = static_cast<uint32_t>(timestamp_ns / 1000000000);
@@ -393,7 +406,7 @@ void ArenaCameraNode::compress_publish_consumer_()
         image_msg->data = std::move(pixel_data);
 
         m_pub_->publish(std::move(image_msg));
-      }
+    
     } catch (std::exception& e) {
       log_warn(std::string("Consumer: ") + e.what());
     }
@@ -477,7 +490,7 @@ void ArenaCameraNode::msg_form_compressed_image_(Arena::IImage* pImage, sensor_m
     image_msg.format = "av1";
 
     // Compress Bayer → AV1 via GPU pipeline
-    auto compressed = compressor_->compress(pImage->GetData(), pImage->GetTimestampNs());
+    auto compressed = compressor_->compress(pImage->GetData(), pixelformat_ros_, pImage->GetTimestampNs());
     
     if (compressed) {
       image_msg.data = std::move(*compressed);

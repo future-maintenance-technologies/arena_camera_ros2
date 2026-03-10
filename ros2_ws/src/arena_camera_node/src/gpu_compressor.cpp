@@ -122,7 +122,7 @@ void GpuCompressor::mono8_to_nv12() {
 // Public API
 // ---------------------------------------------------------------------------
 
-std::optional<std::vector<uint8_t>> GpuCompressor::compress(uint8_t const* input_data, std::string pixel_format, int64_t pts)
+std::optional<std::vector<uint8_t>> GpuCompressor::compress(uint8_t const* input_data, std::string const& pixel_format, int64_t pts)
 {
     using namespace std::chrono;
     auto gpu_start = high_resolution_clock::now();
@@ -151,7 +151,7 @@ std::optional<std::vector<uint8_t>> GpuCompressor::compress(uint8_t const* input
 
     // 4. AV1 encode via VAAPI (CPU sw_frame → GPU encode → CPU bitstream)
     auto encode_start = high_resolution_clock::now();
-    auto result = encoder_->encode(h_nv12_, pixel_format, pts);
+    auto result = encoder_->encode(h_nv12_, pts);
     auto encode_end = high_resolution_clock::now();
     total_encode_time_us_ += duration_cast<microseconds>(encode_end - encode_start).count();
 
