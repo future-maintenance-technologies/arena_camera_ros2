@@ -346,34 +346,38 @@ void ArenaCameraNode::compress_publish_consumer_()
   while (frame_queue_.dequeue(pixel_data, timestamp_ns, frame_id,
                               is_big_endian, bits_per_pixel, data_width)) {
     try {
-      if (pixelformat_ros_ == "bayer_rggb8") {
-      // -- Compress to AV1 (reads pixel_data via pointer, no copy) ----------
-      bool compressed_ok = false;
-      auto compressed_msg = std::make_unique<sensor_msgs::msg::CompressedImage>();
-      compressed_msg->header.stamp.sec     = static_cast<uint32_t>(timestamp_ns / 1000000000);
-      compressed_msg->header.stamp.nanosec = static_cast<uint32_t>(timestamp_ns % 1000000000);
-      compressed_msg->header.frame_id      = frame_id_;
-      compressed_msg->format               = "av1";
-
-      try {
-        auto av1 = compressor_->compress(pixel_data.data(), timestamp_ns);
-        if (av1) {
-          compressed_msg->data = std::move(*av1);
-          frames_compressed_.fetch_add(1, std::memory_order_relaxed);
-          compressed_ok = true;
+      if (pixelformat_ros_ == "bayer_rggb8" || pixelformat_ros_ == "mono8") {
+        // -- Compress to AV1 (reads pixel_data via pointer, no copy) ----------
+        bool compressed_ok = false;
+        auto compressed_msg = std::make_unique<sensor_msgs::msg::CompressedImage>();
+        compressed_msg->header.stamp.sec     = static_cast<uint32_t>(timestamp_ns / 1000000000);
+        compressed_msg->header.stamp.nanosec = static_cast<uint32_t>(timestamp_ns % 1000000000);
+        compressed_msg->header.frame_id      = frame_id_;
+        if (pixelformat_ros_ == "bayer_rggb8") {
+          compressed_msg->format = "av1;nv12;tiled_bayer_rggb8;bayer_rggb8";
         } else {
-          log_warn("Frame dropped — encoder saturated");
-          compression_failures_.fetch_add(1, std::memory_order_relaxed);
+          compressed_msg->format = "av1;nv12;mono8";
         }
-      } catch (std::exception& e) {
-        compression_failures_.fetch_add(1, std::memory_order_relaxed);
-        log_warn(std::string("Compression failed: ") + e.what());
-      }
 
-      if (compressed_ok) {
-        m_pub_compressed_->publish(std::move(compressed_msg));
-        frames_published_.fetch_add(1, std::memory_order_relaxed);
-      }
+        try {
+          auto av1 = compressor_->compress(pixel_data.data(), timestamp_ns);
+          if (av1) {
+            compressed_msg->data = std::move(*av1);
+            frames_compressed_.fetch_add(1, std::memory_order_relaxed);
+            compressed_ok = true;
+          } else {
+            log_warn("Frame dropped — encoder saturated");
+            compression_failures_.fetch_add(1, std::memory_order_relaxed);
+          }
+        } catch (std::exception& e) {
+          compression_failures_.fetch_add(1, std::memory_order_relaxed);
+          log_warn(std::string("Compression failed: ") + e.what());
+        }
+
+        if (compressed_ok) {
+          m_pub_compressed_->publish(std::move(compressed_msg));
+          frames_published_.fetch_add(1, std::memory_order_relaxed);
+        }
       } else {
         // -- Build and publish raw Image message (move pixel_data in) ---------
         auto image_msg = std::make_unique<sensor_msgs::msg::Image>();

@@ -34,9 +34,9 @@ GpuCompressor::GpuCompressor(int width, int height, int framerate,
     , device_name_(gpu_.get_info<sycl::info::device::name>())
 {
     // Pre-allocate GPU buffers
-    d_bayer_ = sycl::malloc_device<uint8_t>(y_size_, q_);
+    d_input_ = sycl::malloc_device<uint8_t>(y_size_, q_);
     d_nv12_  = sycl::malloc_device<uint8_t>(nv12_size_, q_);
-    if (!d_bayer_ || !d_nv12_)
+    if (!d_input_ || !d_nv12_)
         throw std::runtime_error("Failed to allocate SYCL device memory");
 
     // Pinned host buffer for fast GPU→CPU DMA transfer
@@ -47,14 +47,13 @@ GpuCompressor::GpuCompressor(int width, int height, int framerate,
     // UV plane is always 128 (neutral chroma) — set once, never overwritten.
     q_.memset(d_nv12_ + y_size_, 128, nv12_size_ - y_size_).wait();
 
-    encoder_ = std::make_unique<QsvAv1Encoder>(
-        width, height, framerate, qsv_device);
+    encoder_ = std::make_unique<QsvAv1Encoder>(width, height, framerate, qsv_device);
 }
 
 GpuCompressor::~GpuCompressor()
 {
     encoder_.reset();
-    if (d_bayer_) sycl::free(d_bayer_, q_);
+    if (d_input_) sycl::free(d_input_, q_);
     if (d_nv12_)  sycl::free(d_nv12_, q_);
     if (h_nv12_)  sycl::free(h_nv12_, q_);
 }
@@ -70,7 +69,7 @@ void GpuCompressor::bayer_to_tiled_nv12()
     const size_t half_w = w / 2;
     const size_t half_h = h / 2;
 
-    uint8_t* in  = d_bayer_;
+    uint8_t* in  = d_input_;
     uint8_t* out = d_nv12_;
 
     // Separate Bayer channels into quadrants for spatial-aware compression.
@@ -99,21 +98,47 @@ void GpuCompressor::bayer_to_tiled_nv12()
     // No .wait() — in-order queue serializes with the next memcpy.
 }
 
+void GpuCompressor::mono8_to_nv12() {
+    const size_t w = width_;
+    const size_t h = height_;
+
+    uint8_t* in  = d_input_;
+    uint8_t* out = d_nv12_;
+
+    q_.parallel_for(
+        sycl::range<2>(h, w),
+        [=](sycl::id<2> idx) {
+            const size_t row = idx[0];
+            const size_t col = idx[1];
+
+            const uint8_t val = in[row * w + col];
+            out[row * w + col] = val; // Y plane
+            // UV plane stays at 128 (neutral chroma)
+        }
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-std::optional<std::vector<uint8_t>> GpuCompressor::compress(const uint8_t* bayer_data,
-                                                             int64_t pts)
+std::optional<std::vector<uint8_t>> GpuCompressor::compress(uint8_t const* input_data, std::string pixel_format, int64_t pts)
 {
     using namespace std::chrono;
     auto gpu_start = high_resolution_clock::now();
 
     // 1. Upload raw Bayer to GPU
-    q_.memcpy(d_bayer_, bayer_data, y_size_);
+    q_.memcpy(d_input_, input_data, y_size_);
 
-    // 2. Bayer → tiled NV12 on GPU (Y plane written; UV stays at 128)
-    bayer_to_tiled_nv12();
+    if (pixel_format == "bayer_rggb8") {
+        // 2. Bayer → tiled NV12 on GPU (Y plane written; UV stays at 128)
+        bayer_to_tiled_nv12();
+    } else if (pixel_format == "mono8") {
+        // 2. mono8 → NV12 on GPU (Y plane copied; UV stays at 128)
+        mono8_to_nv12();
+    } else {
+        throw std::runtime_error("Unsupported pixel format for compression: " + pixel_format);
+    }
 
     // 3. Download NV12 from GPU to pinned host memory
     q_.memcpy(h_nv12_, d_nv12_, nv12_size_);
@@ -126,7 +151,7 @@ std::optional<std::vector<uint8_t>> GpuCompressor::compress(const uint8_t* bayer
 
     // 4. AV1 encode via VAAPI (CPU sw_frame → GPU encode → CPU bitstream)
     auto encode_start = high_resolution_clock::now();
-    auto result = encoder_->encode(h_nv12_, pts);
+    auto result = encoder_->encode(h_nv12_, pixel_format, pts);
     auto encode_end = high_resolution_clock::now();
     total_encode_time_us_ += duration_cast<microseconds>(encode_end - encode_start).count();
 

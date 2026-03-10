@@ -60,7 +60,7 @@ private:
     std::string  device_name_;
 
     // Pre-allocated GPU buffers (lifetime = this object)
-    uint8_t* d_bayer_ = nullptr;  // device: raw Bayer input
+    uint8_t* d_input_ = nullptr;  // device: raw Bayer input
     uint8_t* d_nv12_  = nullptr;  // device: tiled NV12 output
 
     // Pre-allocated pinned host buffer for efficient GPU→CPU DMA
