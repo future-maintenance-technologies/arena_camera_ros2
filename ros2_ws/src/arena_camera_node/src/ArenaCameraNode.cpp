@@ -281,15 +281,13 @@ void ArenaCameraNode::run_()
     log_info("Initializing GPU compressor for AV1 encoding...");
     log_info(std::string("Using QSV device: ") + qsv_device_);
     compressor_ = std::make_unique<GpuCompressor>(width_, height_, 22, qsv_device_.c_str());
-    RCLCPP_INFO(this->get_logger(), "GPU compressor initialized on: %s",
-                compressor_->device_name().c_str());
-    m_pub_compressed_ = this->create_publisher<sensor_msgs::msg::CompressedImage>(
-        topic_str + "/compressed", pub_qos_);
-    log_info(std::string("Publishing CompressedImage on: ") + topic_str + "/compressed");
-    // Also create raw publisher for debug inspection
-    m_pub_ = this->create_publisher<sensor_msgs::msg::Image>(topic_str, pub_qos_);
-    log_info(std::string("Publishing raw Image (debug) on: ") + topic_str);
+    RCLCPP_INFO(this->get_logger(), "GPU compressor initialized on: %s", compressor_->device_name().c_str());
+    m_pub_compressed_ = this->create_publisher<sensor_msgs::msg::CompressedImage>(topic_str + "_compressed", pub_qos_);
+    log_info(std::string("Publishing CompressedImage on: ") + topic_str + "_compressed");
   }
+  // Also create raw publisher for debug inspection
+  m_pub_ = this->create_publisher<sensor_msgs::msg::Image>(topic_str, pub_qos_);
+  log_info(std::string("Publishing raw Image (debug) on: ") + topic_str);
 
   using namespace std::chrono_literals;
   m_telemetry_timer_ = this->create_wall_timer(
