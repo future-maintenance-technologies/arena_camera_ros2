@@ -118,7 +118,7 @@ class ArenaCameraNode : public rclcpp::Node
 
   std::string frame_id_;
 
-  std::string qsv_device_;  ///< DRI render node for Intel QSV (e.g. /dev/dri/renderD129)
+  std::string qsv_device_;
 
   // ---- Private methods -----------------------------------------------------
   void parse_parameters_();
