@@ -26,7 +26,7 @@ public:
     /// @param height     Image height in pixels (must be even).
     /// @param framerate  Expected frame rate for encoder timing.
     /// @param qsv_device  QSV device path (e.g. "/dev/dri/renderD*").
-    GpuCompressor(int width, int height, int framerate = 22, const char* qsv_device);
+    GpuCompressor(int width, int height, int framerate, const char* qsv_device);
     ~GpuCompressor();
 
     GpuCompressor(const GpuCompressor&) = delete;
