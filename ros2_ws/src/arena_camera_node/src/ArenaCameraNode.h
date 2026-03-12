@@ -82,7 +82,7 @@ class ArenaCameraNode : public rclcpp::Node
   std::thread        producer_thread_;
   std::thread        consumer_thread_;
   std::atomic<bool>  running_{true};
-  FrameQueue<>       frame_queue_;          // bounded SPSC queue (capacity 4)
+  FrameQueue<16>     frame_queue_;          // bounded SPSC queue (capacity 16)
   size_t             frame_size_bytes_ = 0; // PayloadSize from device
 
   // ---- Telemetry (atomic for cross-thread reads) ---------------------------

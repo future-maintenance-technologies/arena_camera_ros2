@@ -10,6 +10,8 @@ extern "C" {
 #include <libavutil/hwcontext.h>
 }
 
+constexpr int QSV_SURFACE_POOL = 32;
+
 /// Hardware-accelerated AV1 encoder using Intel QSV (Quick Sync Video).
 ///
 /// Accepts CPU-side contiguous NV12 frames, uploads them to a QSV surface,
@@ -57,6 +59,10 @@ private:
     AVBufferRef*    hw_frames_ctx_ = nullptr;
     AVCodecContext* codec_ctx_     = nullptr;
     AVFrame*        sw_frame_      = nullptr;
-    AVFrame*        hw_frame_      = nullptr;
     AVPacket*       pkt_           = nullptr;
+
+    // Persistent QSV surface pool — round-robin allocation avoids
+    // per-frame av_hwframe_get_buffer() and driver synchronisation.
+    std::vector<AVFrame*> surfaces_;
+    size_t next_surface_ = 0;
 };

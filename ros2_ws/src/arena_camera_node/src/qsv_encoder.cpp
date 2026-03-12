@@ -50,28 +50,36 @@ QsvAv1Encoder::QsvAv1Encoder(int width, int height, int framerate,
     frames_ctx->sw_format         = AV_PIX_FMT_NV12;
     frames_ctx->width             = width;
     frames_ctx->height            = height;
-    frames_ctx->initial_pool_size = MAX_FRAMES_IN_FLIGHT;
+    frames_ctx->initial_pool_size = 64;
 
     if (av_hwframe_ctx_init(hw_frames_ctx_) < 0)
         throw std::runtime_error("Failed to init QSV hw frames context");
 
     codec_ctx_->hw_frames_ctx = av_buffer_ref(hw_frames_ctx_);
 
+    av_opt_set(codec_ctx_->priv_data, "tile_cols", "2", 0);
+    av_opt_set(codec_ctx_->priv_data, "tile_rows", "2", 0);
+    av_opt_set_int(codec_ctx_->priv_data, "async_depth", 16, 0);
+    av_log_set_level(AV_LOG_VERBOSE);
+
     if (avcodec_open2(codec_ctx_, codec, nullptr) < 0)
         throw std::runtime_error("Failed to open av1_qsv codec");
 
-    // CPU-side NV12 frame (staging buffer for upload to QSV surface)
+    // CPU-side NV12 frame — data pointers are assigned directly to the
+    // pinned host buffer each frame (no private buffer needed).
     sw_frame_ = av_frame_alloc();
     sw_frame_->format = AV_PIX_FMT_NV12;
     sw_frame_->width  = width;
     sw_frame_->height = height;
-    if (av_frame_get_buffer(sw_frame_, 0) < 0)
-        throw std::runtime_error("Failed to allocate sw_frame buffer");
 
-    // QSV surface frame
-    hw_frame_ = av_frame_alloc();
-    if (av_hwframe_get_buffer(hw_frames_ctx_, hw_frame_, 0) < 0)
-        throw std::runtime_error("Failed to allocate hw_frame buffer");
+    // Pre-allocate persistent QSV surface pool (avoids per-frame allocation).
+    for (int i = 0; i < QSV_SURFACE_POOL; ++i) {
+        AVFrame* frame = av_frame_alloc();
+        if (av_hwframe_get_buffer(hw_frames_ctx_, frame, 0) < 0) {
+            throw std::runtime_error("Failed to allocate QSV surface");
+        }
+        surfaces_.push_back(frame);
+    }
 
     pkt_ = av_packet_alloc();
 }
@@ -88,42 +96,30 @@ std::optional<std::vector<uint8_t>> QsvAv1Encoder::encode(const uint8_t* nv12_da
     frames_in_flight_.fetch_add(1, std::memory_order_release);
 
     try {
-        // Re-acquire QSV surface each frame
-        av_frame_unref(hw_frame_);
-        if (av_hwframe_get_buffer(hw_frames_ctx_, hw_frame_, 0) < 0) {
-            frames_in_flight_.fetch_sub(1, std::memory_order_release);
-            throw std::runtime_error("Failed to get hw frame buffer");
-        }
+        // Round-robin surface from persistent pool (no per-frame allocation)
+        AVFrame* hw_frame = surfaces_[next_surface_];
+        next_surface_ = (next_surface_ + 1) % surfaces_.size();
 
-        // --- NV12 CPU copy ---
-        // Copy contiguous NV12 into sw_frame planes (respecting linesize/stride).
-        // Y plane — row by row (linesize may exceed width due to alignment)
-        for (int row = 0; row < height_; ++row) {
-            std::memcpy(sw_frame_->data[0] + row * sw_frame_->linesize[0],
-                        nv12_data + row * width_,
-                        width_);
-        }
-        // UV plane
-        const size_t y_size = static_cast<size_t>(width_) * height_;
-        for (int row = 0; row < height_ / 2; ++row) {
-            std::memcpy(sw_frame_->data[1] + row * sw_frame_->linesize[1],
-                        nv12_data + y_size + row * width_,
-                        width_);
-        }
-        sw_frame_->pts = pts;
+        // --- Map pinned NV12 buffer directly as AVFrame backing memory ---
+        // Eliminates ~600 MB/s CPU memcpy traffic.
+        sw_frame_->data[0]     = const_cast<uint8_t*>(nv12_data);
+        sw_frame_->data[1]     = const_cast<uint8_t*>(nv12_data) + width_ * height_;
+        sw_frame_->linesize[0] = width_;
+        sw_frame_->linesize[1] = width_;
+        sw_frame_->pts         = pts;
 
         // --- Upload CPU frame → QSV surface (GPU) ---
-        int ret = av_hwframe_transfer_data(hw_frame_, sw_frame_, 0);
+        int ret = av_hwframe_transfer_data(hw_frame, sw_frame_, 0);
         if (ret < 0) {
             frames_in_flight_.fetch_sub(1, std::memory_order_release);
             char errbuf[128];
             av_strerror(ret, errbuf, sizeof(errbuf));
             throw std::runtime_error(std::string("hwframe transfer failed: ") + errbuf);
         }
-        hw_frame_->pts = pts;
+        hw_frame->pts = pts;
 
         // --- Send frame to hardware encoder ---
-        ret = avcodec_send_frame(codec_ctx_, hw_frame_);
+        ret = avcodec_send_frame(codec_ctx_, hw_frame);
         if (ret < 0) {
             frames_in_flight_.fetch_sub(1, std::memory_order_release);
             char errbuf[128];
@@ -131,21 +127,11 @@ std::optional<std::vector<uint8_t>> QsvAv1Encoder::encode(const uint8_t* nv12_da
             throw std::runtime_error(std::string("send_frame failed: ") + errbuf);
         }
 
-        // --- Drain all available encoded packets ---
+        // --- Drain all available encoded packets without blocking ---
         std::vector<uint8_t> result;
-        while (true) {
-            ret = avcodec_receive_packet(codec_ctx_, pkt_);
-            if (ret == 0) {
-                result.insert(result.end(), pkt_->data, pkt_->data + pkt_->size);
-                av_packet_unref(pkt_);
-            } else if (ret == AVERROR(EAGAIN)) {
-                break;
-            } else {
-                frames_in_flight_.fetch_sub(1, std::memory_order_release);
-                char errbuf[128];
-                av_strerror(ret, errbuf, sizeof(errbuf));
-                throw std::runtime_error(std::string("receive_packet error: ") + errbuf);
-            }
+        while (avcodec_receive_packet(codec_ctx_, pkt_) == 0) {
+            result.insert(result.end(), pkt_->data, pkt_->data + pkt_->size);
+            av_packet_unref(pkt_);
         }
 
         frames_in_flight_.fetch_sub(1, std::memory_order_release);
@@ -161,7 +147,10 @@ std::optional<std::vector<uint8_t>> QsvAv1Encoder::encode(const uint8_t* nv12_da
 QsvAv1Encoder::~QsvAv1Encoder()
 {
     av_frame_free(&sw_frame_);
-    av_frame_free(&hw_frame_);
+    for (auto* surface : surfaces_) {
+        av_frame_free(&surface);
+    }
+    surfaces_.clear();
     av_packet_free(&pkt_);
     avcodec_free_context(&codec_ctx_);
     av_buffer_unref(&hw_frames_ctx_);

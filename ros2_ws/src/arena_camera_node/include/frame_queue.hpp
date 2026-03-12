@@ -93,8 +93,8 @@ class FrameQueue {
     if (shutdown_.load(std::memory_order_acquire)) return false;
 
     auto& slot = slots_[head_];
-    slot.data.resize(byte_count);              // no-alloc when capacity >= byte_count
-    std::memcpy(slot.data.data(), pixel_data, byte_count);
+    std::memcpy(slot.data.data(), pixel_data, byte_count);  // write into pre-reserved capacity
+    slot.data.resize(byte_count);              // set logical size (no capacity change)
     slot.timestamp_ns  = timestamp_ns;
     slot.frame_id      = frame_id;
     slot.is_big_endian = is_big_endian;
