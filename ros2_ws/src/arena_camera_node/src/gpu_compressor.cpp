@@ -1,5 +1,6 @@
 #include "gpu_compressor.hpp"
 #include "qsv_encoder.hpp"
+#include "dmabuf_surface_pool.hpp"
 
 #include <stdexcept>
 
@@ -24,60 +25,64 @@ sycl::device GpuCompressor::find_gpu()
 // ---------------------------------------------------------------------------
 
 GpuCompressor::GpuCompressor(int width, int height, int framerate,
-                             const char* qsv_device)
+                             const char* device_path)
     : width_(width)
     , height_(height)
     , y_size_(static_cast<size_t>(width) * height)
-    , nv12_size_(y_size_ + static_cast<size_t>(width) * (height / 2))
     , gpu_(find_gpu())
     , q_(gpu_, sycl::property::queue::in_order{})
     , device_name_(gpu_.get_info<sycl::info::device::name>())
 {
-    // Pre-allocate GPU buffers
+    // Raw camera input buffer on GPU (Bayer / Mono8 uploaded each frame).
     d_input_ = sycl::malloc_device<uint8_t>(y_size_, q_);
-    d_nv12_  = sycl::malloc_device<uint8_t>(nv12_size_, q_);
-    if (!d_input_ || !d_nv12_)
-        throw std::runtime_error("Failed to allocate SYCL device memory");
+    if (!d_input_)
+        throw std::runtime_error("Failed to allocate SYCL device memory for input");
 
-    // Pinned host buffer for fast GPU→CPU DMA transfer
-    h_nv12_ = sycl::malloc_host<uint8_t>(nv12_size_, q_);
-    if (!h_nv12_)
-        throw std::runtime_error("Failed to allocate SYCL pinned host memory");
+    // 1. Create VAAPI AV1 encoder (allocates hw device + frames contexts).
+    encoder_ = std::make_unique<QsvAv1Encoder>(width, height, framerate, device_path);
 
-    // UV plane is always 128 (neutral chroma) — set once, never overwritten.
-    q_.memset(d_nv12_ + y_size_, 128, nv12_size_ - y_size_).wait();
-
-    encoder_ = std::make_unique<QsvAv1Encoder>(width, height, framerate, qsv_device);
+    // 2. Create DMA-BUF surface pool — allocates VAAPI surfaces, exports them
+    //    as DMA-BUF FDs, and imports into Level Zero for zero-copy SYCL access.
+    //    UV planes are pre-filled with 128 (neutral chroma).
+    surface_pool_ = std::make_unique<DmaBufSurfacePool>(
+        DMABUF_POOL_SIZE,
+        encoder_->hw_frames_ctx(),
+        encoder_->va_display(),
+        q_);
 }
 
 GpuCompressor::~GpuCompressor()
 {
+    // Destroy pool first (frees Level Zero memory + DMA-BUF FDs),
+    // then encoder (frees VAAPI contexts).  Order matters.
+    surface_pool_.reset();
     encoder_.reset();
     if (d_input_) sycl::free(d_input_, q_);
-    if (d_nv12_)  sycl::free(d_nv12_, q_);
-    if (h_nv12_)  sycl::free(h_nv12_, q_);
 }
 
 // ---------------------------------------------------------------------------
-// SYCL kernel — Bayer → tiled NV12
+// SYCL kernel — Bayer → tiled NV12 into DMA-BUF surface
 // ---------------------------------------------------------------------------
 
-void GpuCompressor::bayer_to_tiled_nv12()
+void GpuCompressor::bayer_to_tiled_nv12(DmaBufSurface& surface)
 {
     const size_t w      = width_;
     const size_t h      = height_;
     const size_t half_w = w / 2;
     const size_t half_h = h / 2;
+    const size_t pitch  = surface.y_pitch;
+    const size_t y_off  = surface.y_offset;
 
     uint8_t* in  = d_input_;
-    uint8_t* out = d_nv12_;
+    uint8_t* out = surface.sycl_ptr;
 
     // Separate Bayer channels into quadrants for spatial-aware compression.
     // Each 2×2 Bayer block contributes one pixel to each quadrant:
     //   TL = (even row, even col)   TR = (even row, odd col)
     //   BL = (odd  row, even col)   BR = (odd  row, odd col)
     //
-    // Writes only the Y plane [0, y_size_). UV plane stays at 128.
+    // Writes only the Y plane at the surface's y_offset with y_pitch stride.
+    // UV plane stays at 128 (pre-set at pool construction time).
     q_.parallel_for(
         sycl::range<2>(h, w),
         [=](sycl::id<2> idx) {
@@ -92,18 +97,21 @@ void GpuCompressor::bayer_to_tiled_nv12()
             const size_t quad_x = (col & 1) ? half_w : 0;
             const size_t quad_y = (row & 1) ? half_h : 0;
 
-            out[(quad_y + sub_row) * w + (quad_x + sub_col)] = val;
+            out[y_off + (quad_y + sub_row) * pitch + (quad_x + sub_col)] = val;
         }
     );
-    // No .wait() — in-order queue serializes with the next memcpy.
+    // No .wait() — in-order queue serializes with the next operation.
 }
 
-void GpuCompressor::mono8_to_nv12() {
-    const size_t w = width_;
-    const size_t h = height_;
+void GpuCompressor::mono8_to_nv12(DmaBufSurface& surface)
+{
+    const size_t w     = width_;
+    const size_t h     = height_;
+    const size_t pitch = surface.y_pitch;
+    const size_t y_off = surface.y_offset;
 
     uint8_t* in  = d_input_;
-    uint8_t* out = d_nv12_;
+    uint8_t* out = surface.sycl_ptr;
 
     q_.parallel_for(
         sycl::range<2>(h, w),
@@ -112,8 +120,7 @@ void GpuCompressor::mono8_to_nv12() {
             const size_t col = idx[1];
 
             const uint8_t val = in[row * w + col];
-            out[row * w + col] = val; // Y plane
-            // UV plane stays at 128 (neutral chroma)
+            out[y_off + row * pitch + col] = val;  // Y plane
         }
     );
 }
@@ -127,31 +134,33 @@ std::optional<std::vector<uint8_t>> GpuCompressor::compress(uint8_t const* input
     using namespace std::chrono;
     auto gpu_start = high_resolution_clock::now();
 
-    // 1. Upload raw Bayer to GPU
+    // 1. Upload raw camera data (Bayer / Mono8) to GPU
     q_.memcpy(d_input_, input_data, y_size_);
 
+    // 2. Acquire a DMA-BUF surface from the pool (round-robin)
+    auto& surface = surface_pool_->acquire();
+
+    // 3. SYCL kernel writes NV12 directly into the VAAPI surface (zero-copy)
     if (pixel_format == "bayer_rggb8") {
-        // 2. Bayer → tiled NV12 on GPU (Y plane written; UV stays at 128)
-        bayer_to_tiled_nv12();
+        bayer_to_tiled_nv12(surface);
     } else if (pixel_format == "mono8") {
-        // 2. mono8 → NV12 on GPU (Y plane copied; UV stays at 128)
-        mono8_to_nv12();
+        mono8_to_nv12(surface);
     } else {
         throw std::runtime_error("Unsupported pixel format for compression: " + pixel_format);
     }
 
-    // 3. Download NV12 from GPU to pinned host memory
-    q_.memcpy(h_nv12_, d_nv12_, nv12_size_);
-
-    // Single sync point — all three GPU operations complete here
+    // 4. Synchronize — ensures SYCL writes are visible to the VAAPI encoder.
+    //    On Intel GPUs, q.wait() is sufficient because Level Zero compute and
+    //    VAAPI fixed-function engines share the same GPU and LLC.
     q_.wait();
 
     auto gpu_end = high_resolution_clock::now();
     total_gpu_time_us_ += duration_cast<microseconds>(gpu_end - gpu_start).count();
 
-    // 4. AV1 encode via VAAPI (CPU sw_frame → GPU encode → CPU bitstream)
+    // 5. Encode: submit VAAPI surface directly — zero CPU copies.
+    //    No av_hwframe_transfer_data(), no GPU→CPU→GPU round-trip.
     auto encode_start = high_resolution_clock::now();
-    auto result = encoder_->encode(h_nv12_, pts);
+    auto result = encoder_->encode_surface(surface.hw_frame, pts);
     auto encode_end = high_resolution_clock::now();
     total_encode_time_us_ += duration_cast<microseconds>(encode_end - encode_start).count();
 
