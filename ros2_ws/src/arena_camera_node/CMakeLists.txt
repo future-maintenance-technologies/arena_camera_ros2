@@ -66,6 +66,7 @@ pkg_check_modules(FFMPEG REQUIRED
   libavformat
   libswscale
 )
+pkg_check_modules(LIBVA REQUIRED libva libva-drm)
 
 # --------------------
 # RUNTIME LIBRARY PATH
@@ -164,6 +165,7 @@ add_executable(${target_name}
     src/rclcpp_adapter/quilty_of_service_translation.cpp
     src/gpu_compressor.cpp
     src/qsv_encoder.cpp
+    src/dmabuf_surface_pool.cpp
 )
 
 # HEADERS DEP
@@ -171,6 +173,7 @@ target_include_directories(${target_name}
   PRIVATE
     ${arena_sdk_INCLUDE_DIRS}
     ${FFMPEG_INCLUDE_DIRS}
+    ${LIBVA_INCLUDE_DIRS}
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
@@ -197,6 +200,8 @@ ament_target_dependencies(${target_name}  rclcpp
 target_link_libraries(${target_name}
   ${OpenCV_LIBRARIES}
   ${FFMPEG_LINK_LIBRARIES}
+  ${LIBVA_LINK_LIBRARIES}
+  ze_loader
 )
 
 

@@ -8,40 +8,52 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/hwcontext.h>
+#include <libavutil/hwcontext_vaapi.h>
+#include <va/va.h>
 }
 
-constexpr int QSV_SURFACE_POOL = 32;
-
-/// Hardware-accelerated AV1 encoder using Intel QSV (Quick Sync Video).
+/// Hardware-accelerated AV1 encoder via VAAPI (Video Acceleration API).
 ///
-/// Accepts CPU-side contiguous NV12 frames, uploads them to a QSV surface,
-/// encodes with the GPU's fixed-function AV1 encoder, and returns the bitstream.
-/// Implements backpressure: drops frames when encoder is saturated.
+/// Uses the GPU's fixed-function AV1 encoder through the VAAPI interface.
+/// Surfaces are managed externally by DmaBufSurfacePool and passed directly
+/// to encode_surface() — no CPU upload, no av_hwframe_transfer_data().
+///
+/// The underlying hardware (Intel Quick Sync on Arc GPUs) is the same as the
+/// prior av1_qsv path; VAAPI is used instead of the QSV/oneVPL wrapper to
+/// enable direct DMA-BUF surface export for zero-copy SYCL interop.
 class QsvAv1Encoder {
 public:
-    /// @param width        Frame width  (must match input NV12 data).
-    /// @param height       Frame height (must match input NV12 data).
+    /// @param width        Frame width  (must match surface dimensions).
+    /// @param height       Frame height (must match surface dimensions).
     /// @param framerate    Used for time_base/framerate codec settings.
-    /// @param qsv_device   QSV device path (e.g. "/dev/dri/renderD*").
-    QsvAv1Encoder(int width, int height, int framerate, const char* qsv_device);
+    /// @param device_path  Render node path (e.g. "/dev/dri/renderD128").
+    QsvAv1Encoder(int width, int height, int framerate, const char* device_path);
     ~QsvAv1Encoder();
 
     QsvAv1Encoder(const QsvAv1Encoder&) = delete;
     QsvAv1Encoder& operator=(const QsvAv1Encoder&) = delete;
 
-    /// Encode one NV12 frame to AV1.
-    /// @param nv12_data  Contiguous NV12 buffer: Y plane (width*height bytes)
-    ///                   followed by interleaved UV plane (width*height/2 bytes).
-    /// @param pts        Presentation timestamp.
-    /// @return Encoded AV1 bytes, or nullopt if frame was dropped due to saturation.
-    std::optional<std::vector<uint8_t>> encode(const uint8_t* nv12_data, int64_t pts);
+    /// Encode a VAAPI surface directly (zero-copy).
+    ///
+    /// @param hw_frame  VAAPI surface pre-filled with NV12 data (e.g. from
+    ///                  DmaBufSurfacePool).  Must belong to hw_frames_ctx().
+    /// @param pts       Presentation timestamp forwarded to the bitstream.
+    /// @return Encoded AV1 bitstream bytes, or nullopt if dropped (saturation).
+    std::optional<std::vector<uint8_t>> encode_surface(AVFrame* hw_frame,
+                                                       int64_t pts);
 
     int width()  const { return width_; }
     int height() const { return height_; }
 
+    /// VAAPI display handle — needed by DmaBufSurfacePool for DMA-BUF export.
+    VADisplay va_display() const;
+
+    /// Hardware frames context — used by DmaBufSurfacePool to allocate surfaces.
+    AVBufferRef* hw_frames_ctx() const { return hw_frames_ctx_; }
+
     // Telemetry
-    uint64_t frames_encoded() const { return frames_encoded_.load(std::memory_order_relaxed); }
-    uint64_t frames_dropped() const { return frames_dropped_.load(std::memory_order_relaxed); }
+    uint64_t frames_encoded()   const { return frames_encoded_.load(std::memory_order_relaxed); }
+    uint64_t frames_dropped()   const { return frames_dropped_.load(std::memory_order_relaxed); }
     int      frames_in_flight() const { return frames_in_flight_.load(std::memory_order_acquire); }
 
 private:
@@ -58,11 +70,5 @@ private:
     AVBufferRef*    hw_device_ctx_ = nullptr;
     AVBufferRef*    hw_frames_ctx_ = nullptr;
     AVCodecContext* codec_ctx_     = nullptr;
-    AVFrame*        sw_frame_      = nullptr;
     AVPacket*       pkt_           = nullptr;
-
-    // Persistent QSV surface pool — round-robin allocation avoids
-    // per-frame av_hwframe_get_buffer() and driver synchronisation.
-    std::vector<AVFrame*> surfaces_;
-    size_t next_surface_ = 0;
 };
