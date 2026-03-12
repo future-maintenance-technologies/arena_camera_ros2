@@ -71,6 +71,14 @@ class ArenaCameraNode : public rclcpp::Node
   std::unique_ptr<GpuCompressor> compressor_;
 
   // ---- Producer / consumer pipeline ----------------------------------------
+  /// Observable states of the producer thread — for stall diagnosis.
+  enum class ProducerState : uint8_t {
+    Idle         = 0,  ///< Not yet started or finished.
+    WaitingImage = 1,  ///< Blocked inside GetImage() — camera or SDK stall.
+    Enqueueing   = 2,  ///< Blocked in enqueue() — queue full, GPU is bottleneck.
+    Processing   = 3,  ///< Copying data / calling RequeueBuffer().
+  };
+
   std::thread        producer_thread_;
   std::thread        consumer_thread_;
   std::atomic<bool>  running_{true};
@@ -82,6 +90,9 @@ class ArenaCameraNode : public rclcpp::Node
   std::atomic<uint64_t> frames_published_{0};
   std::atomic<uint64_t> frames_compressed_{0};
   std::atomic<uint64_t> compression_failures_{0};
+  std::atomic<uint8_t>  producer_state_{
+      static_cast<uint8_t>(ProducerState::Idle)};
+  std::atomic<int64_t>  last_frame_received_mono_ns_{0}; ///< CLOCK_MONOTONIC ns, updated each GetImage() return.
 
   // ---- Parameters ----------------------------------------------------------
   std::string serial_;
@@ -119,6 +130,8 @@ class ArenaCameraNode : public rclcpp::Node
   std::string frame_id_;
 
   std::string qsv_device_;
+
+  std::string camera_type_;
 
   // ---- Private methods -----------------------------------------------------
   void parse_parameters_();

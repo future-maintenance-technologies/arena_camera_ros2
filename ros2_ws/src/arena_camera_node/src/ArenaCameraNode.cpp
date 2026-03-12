@@ -35,6 +35,7 @@ void ArenaCameraNode::parse_parameters_()
 
     nextParameterToDeclare = "gain";
     gain_ = this->declare_parameter("gain", -1.0);
+    log_info("Received gain: " + std::to_string(gain_));
     is_passed_gain_ = gain_ >= 0;
 
     // log_info(std::to_string(gain_));
@@ -73,6 +74,12 @@ void ArenaCameraNode::parse_parameters_()
     qsv_device_ = this->declare_parameter("qsv_device", "");
     if (qsv_device_ == "") {
       throw std::invalid_argument("QSV Device must be provided");
+    }
+
+    nextParameterToDeclare = "camera_type";
+    camera_type_ = this->declare_parameter("camera_type", "");
+    if (camera_type_ == "") {
+      throw std::invalid_argument("Camera type must be provided");
     }
     
   } catch (rclcpp::ParameterTypeException& e) {
@@ -229,34 +236,64 @@ void ArenaCameraNode::wait_for_device_timer_callback_()
 
 void ArenaCameraNode::telemetry_timer_callback_()
 {
-  if (!compressor_) return;
+  // ---- compressor stats ----------------------------------------------------
+  const uint64_t frames_dropped    = compressor_ ? compressor_->frames_dropped()   : 0;
+  const uint64_t frames_compressed = compressor_ ? compressor_->frames_compressed(): 0;
+  const uint64_t total_frames      = frames_compressed + frames_dropped;
 
-  const uint64_t frames_dropped = compressor_->frames_dropped();
-  const uint64_t frames_compressed = compressor_->frames_compressed();
-  const uint64_t total_frames = frames_compressed + frames_dropped;
-  
-  const double drop_rate = total_frames > 0 
-      ? (100.0 * frames_dropped / total_frames) 
+  const double drop_rate = total_frames > 0
+      ? (100.0 * frames_dropped / total_frames)
       : 0.0;
 
-  const double avg_gpu_time_ms = frames_compressed > 0
+  const double avg_gpu_time_ms = (compressor_ && frames_compressed > 0)
       ? (compressor_->total_gpu_time_us() / 1000.0 / frames_compressed)
       : 0.0;
 
-  const double avg_encode_time_ms = frames_compressed > 0
+  const double avg_encode_time_ms = (compressor_ && frames_compressed > 0)
       ? (compressor_->total_encode_time_us() / 1000.0 / frames_compressed)
       : 0.0;
 
+  // ---- queue / producer stats ----------------------------------------------
+  const size_t   queue_depth  = frame_queue_.depth();
+  const uint64_t queue_stalls = frame_queue_.enqueue_stalls();
+
+  // Human-readable producer state.
+  auto pstate_raw = static_cast<ProducerState>(
+      producer_state_.load(std::memory_order_relaxed));
+  const char* pstate_str = [pstate_raw]() -> const char* {
+    switch (pstate_raw) {
+      case ProducerState::Idle:         return "idle";
+      case ProducerState::WaitingImage: return "WAITING_FOR_IMAGE (GetImage blocked)";
+      case ProducerState::Enqueueing:   return "ENQUEUEING (queue full — GPU bottleneck)";
+      case ProducerState::Processing:   return "processing";
+    }
+    return "unknown";
+  }();
+
+  // Time since the last successful GetImage() return.
+  const int64_t last_rx_ns = last_frame_received_mono_ns_.load(std::memory_order_relaxed);
+  double secs_since_last_frame = -1.0;
+  if (last_rx_ns > 0) {
+    const int64_t now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    secs_since_last_frame = (now_ns - last_rx_ns) / 1e9;
+  }
+
   RCLCPP_INFO(this->get_logger(),
     "\n=== Camera Telemetry ===\n"
-    "  Frames received:       %lu\n"
-    "  Frames published:      %lu (raw)\n"
-    "  Frames compressed:     %lu\n"
-    "  Frames dropped:        %lu (%.2f%%)\n"
-    "  Compression failures:  %lu\n"
-    "  Avg GPU time:          %.2f ms\n"
-    "  Avg encode time:       %.2f ms\n"
-    "  Total pipeline time:   %.2f ms/frame",
+    "  Frames received:          %lu\n"
+    "  Frames published:         %lu (compressed)\n"
+    "  Frames compressed:        %lu\n"
+    "  Encoder drops:            %lu (%.2f%% of compressed+dropped)\n"
+    "  Compression failures:     %lu\n"
+    "  Avg GPU time:             %.2f ms\n"
+    "  Avg encode time:          %.2f ms\n"
+    "  Total pipeline time:      %.2f ms/frame\n"
+    "  --- Queue / Producer ---\n"
+    "  Queue depth:              %zu / 4\n"
+    "  Queue stalls (enqueue):   %lu  ← non-zero = GPU is back-pressuring producer\n"
+    "  Producer state:           %s\n"
+    "  Secs since last frame:    %.3f s  ← large = GetImage() stalled (camera buffer starved)",
     frames_received_.load(std::memory_order_relaxed),
     frames_published_.load(std::memory_order_relaxed),
     frames_compressed,
@@ -265,7 +302,11 @@ void ArenaCameraNode::telemetry_timer_callback_()
     compression_failures_.load(std::memory_order_relaxed),
     avg_gpu_time_ms,
     avg_encode_time_ms,
-    avg_gpu_time_ms + avg_encode_time_ms
+    avg_gpu_time_ms + avg_encode_time_ms,
+    queue_depth,
+    queue_stalls,
+    pstate_str,
+    secs_since_last_frame
   );
 }
 
@@ -312,14 +353,29 @@ void ArenaCameraNode::camera_producer_()
 {
   Arena::IImage* pImage = nullptr;
 
+  auto set_state = [this](ProducerState s) {
+    producer_state_.store(static_cast<uint8_t>(s), std::memory_order_relaxed);
+  };
+
   while (running_.load() && rclcpp::ok()) {
     try {
+      set_state(ProducerState::WaitingImage);
       pImage = m_pDevice->GetImage(999999999999);
+
+      set_state(ProducerState::Processing);
       frames_received_.fetch_add(1, std::memory_order_relaxed);
+      // Record wall-clock time of this successful GetImage() return so the
+      // telemetry timer can detect if GetImage() stalls in the future.
+      last_frame_received_mono_ns_.store(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now().time_since_epoch())
+              .count(),
+          std::memory_order_relaxed);
 
       auto pixel_bytes = pImage->GetBitsPerPixel() / 8;
       auto total_bytes = pImage->GetWidth() * pImage->GetHeight() * pixel_bytes;
 
+      set_state(ProducerState::Enqueueing);
       bool ok = frame_queue_.enqueue(
           pImage->GetData(), total_bytes,
           pImage->GetTimestampNs(),
@@ -328,6 +384,7 @@ void ArenaCameraNode::camera_producer_()
           pImage->GetBitsPerPixel(),
           pImage->GetWidth());
 
+      set_state(ProducerState::Processing);
       m_pDevice->RequeueBuffer(pImage);
       pImage = nullptr;
 
@@ -341,6 +398,7 @@ void ArenaCameraNode::camera_producer_()
       log_warn(std::string("Producer: ") + e.what());
     }
   }
+  set_state(ProducerState::Idle);
 }
 
 // -----------------------------------------------------------------------------
@@ -392,7 +450,7 @@ void ArenaCameraNode::compress_publish_consumer_()
           m_pub_compressed_->publish(std::move(compressed_msg));
           frames_published_.fetch_add(1, std::memory_order_relaxed);
         }
-      } 
+      } else {
         // -- Build and publish raw Image message (move pixel_data in) ---------
         auto image_msg = std::make_unique<sensor_msgs::msg::Image>();
         image_msg->header.stamp.sec     = static_cast<uint32_t>(timestamp_ns / 1000000000);
@@ -405,9 +463,9 @@ void ArenaCameraNode::compress_publish_consumer_()
         image_msg->step = static_cast<sensor_msgs::msg::Image::_step_type>(
             data_width * (bits_per_pixel / 8));
         image_msg->data = std::move(pixel_data);
-
+          
         m_pub_->publish(std::move(image_msg));
-    
+      }
     } catch (std::exception& e) {
       log_warn(std::string("Consumer: ") + e.what());
     }
@@ -618,8 +676,8 @@ void ArenaCameraNode::set_nodes_()
   set_nodes_roi_();
   set_nodes_gain_();
   set_nodes_pixelformat_();
-  set_nodes_exposure_();
   set_nodes_trigger_mode_();
+  set_nodes_exposure_();
 
   // Configure Auto Negotiate Packet Size and Packet Resend
   Arena::SetNodeValue<bool>(m_pDevice->GetTLStreamNodeMap(), "StreamAutoNegotiatePacketSize", true);
@@ -713,8 +771,13 @@ void ArenaCameraNode::set_nodes_exposure_()
   if (is_passed_exposure_time_) {
 
     auto nodemap = m_pDevice->GetNodeMap();
-    Arena::SetNodeValue<GenICam::gcstring>(nodemap, "ExposureAuto", "Off");
+    log_info(std::string("\tExposureTime set to ") + std::to_string(exposure_time_));
+    if (camera_type_ == "high_speed") {
+      Arena::SetNodeValue<GenICam::gcstring>(nodemap, "ExposureAuto", "Off");
+      log_info("\tExposureAuto set to Off");
+    }
     Arena::SetNodeValue<double>(nodemap, "ExposureTime", exposure_time_);
+    log_info(std::string("\tExposureTime set to ") + std::to_string(exposure_time_));
   }
 }
 

@@ -62,6 +62,16 @@ class FrameQueue {
     not_full_.notify_all();
   }
 
+  /// Current number of frames buffered (approximate, lock-free read).
+  size_t depth() const { return depth_.load(std::memory_order_acquire); }
+
+  /// Number of times the producer blocked on a full queue.
+  /// A non-zero value means the consumer (GPU) is the bottleneck and camera
+  /// buffers are being starved of RequeueBuffer() calls.
+  uint64_t enqueue_stalls() const {
+    return enqueue_stalls_.load(std::memory_order_relaxed);
+  }
+
   // ---------------------------------------------------------------------------
   // Producer API
   // ---------------------------------------------------------------------------
@@ -72,6 +82,11 @@ class FrameQueue {
                int64_t timestamp_ns, uint64_t frame_id,
                bool is_big_endian, size_t bits_per_pixel, size_t width) {
     std::unique_lock<std::mutex> lock(mutex_);
+    // Count a stall if we are about to block on a full queue — this is the
+    // telemetry signal that camera buffers are being held too long.
+    if (count_ >= Capacity && !shutdown_.load(std::memory_order_acquire)) {
+      enqueue_stalls_.fetch_add(1, std::memory_order_relaxed);
+    }
     not_full_.wait(lock, [this] {
       return count_ < Capacity || shutdown_.load(std::memory_order_acquire);
     });
@@ -88,6 +103,7 @@ class FrameQueue {
 
     head_ = (head_ + 1) % Capacity;
     ++count_;
+    depth_.store(count_, std::memory_order_release);
 
     lock.unlock();
     not_empty_.notify_one();
@@ -124,6 +140,7 @@ class FrameQueue {
 
     tail_ = (tail_ + 1) % Capacity;
     --count_;
+    depth_.store(count_, std::memory_order_release);
 
     lock.unlock();
     not_full_.notify_one();
@@ -141,13 +158,15 @@ class FrameQueue {
   std::array<CapturedFrame, Capacity> slots_;
   size_t head_  = 0;
   size_t tail_  = 0;
-  size_t count_ = 0;
+  size_t count_ = 0;  // guarded by mutex_
 
   std::mutex              mutex_;
   std::condition_variable not_empty_;
   std::condition_variable not_full_;
 
-  std::atomic<bool> shutdown_{false};
+  std::atomic<bool>     shutdown_{false};
+  std::atomic<size_t>   depth_{0};           // lock-free mirror of count_
+  std::atomic<uint64_t> enqueue_stalls_{0};  // incremented each time producer blocks on full queue
 
   // Spare buffer used by the consumer swap chain.
   std::vector<uint8_t> spare_;
