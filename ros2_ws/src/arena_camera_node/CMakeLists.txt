@@ -54,6 +54,7 @@ set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/cmake/")
 # - even if a dependency is used in one package, it has to be found
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_components REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -154,11 +155,10 @@ link_directories(
 #
 # -----------------------------------------------------------------------------
 
-set(target_name start)
+set(component_name arena_camera_node_component)
 
-# CPP DEPS
-add_executable(${target_name}
-    src/main.cpp
+# Build as a shared library so it can be loaded as a composable node
+add_library(${component_name} SHARED
     src/ArenaCameraNode.cpp
     src/light_arena/deviceinfo_helper.cpp
     src/rclcpp_adapter/pixelformat_translation.cpp
@@ -168,8 +168,7 @@ add_executable(${target_name}
     src/dmabuf_surface_pool.cpp
 )
 
-# HEADERS DEP
-target_include_directories(${target_name}
+target_include_directories(${component_name}
   PRIVATE
     ${arena_sdk_INCLUDE_DIRS}
     ${FFMPEG_INCLUDE_DIRS}
@@ -179,35 +178,35 @@ target_include_directories(${target_name}
     $<INSTALL_INTERFACE:include>
 )
 
-# CPP -> .a file
-# creates :
-# - build/arena_camera_node/CMakeFiles/arena_camera_node.dir and sub dirs
-# - build/arena_camera_node/libarena_camera_node.a
-# add_library(${PROJECT_NAME} src/main.cpp)
-
-# EXPORT .a file for other pakges ?
-#ament_export_libraries(${PROJECT_NAME} ${rclcpp_LIBRARIES})
-
-# ROS DEP
-# - this way, it will find our header libs automatically
-# - for Arenasdk the cmake way is used no ament
-ament_target_dependencies(${target_name}  rclcpp 
-                                          std_msgs 
-                                          std_srvs
-                                          sensor_msgs
-                                          arena_sdk
-                                          )
-target_link_libraries(${target_name}
+ament_target_dependencies(${component_name}
+  rclcpp
+  rclcpp_components
+  std_msgs
+  std_srvs
+  sensor_msgs
+  arena_sdk
+)
+target_link_libraries(${component_name}
   ${OpenCV_LIBRARIES}
   ${FFMPEG_LINK_LIBRARIES}
   ${LIBVA_LINK_LIBRARIES}
   ze_loader
 )
 
+# Register the component and generate a standalone "start" executable
+rclcpp_components_register_node(${component_name}
+  PLUGIN "ArenaCameraNode"
+  EXECUTABLE arena_camera_node
+)
 
-# MV EXEC to lib dir
 install(TARGETS
-  ${target_name} 
+  ${component_name}
+    ARCHIVE DESTINATION lib
+    LIBRARY DESTINATION lib
+    RUNTIME DESTINATION bin
+)
+install(TARGETS
+  arena_camera_node
     DESTINATION lib/${PROJECT_NAME}
 )
 

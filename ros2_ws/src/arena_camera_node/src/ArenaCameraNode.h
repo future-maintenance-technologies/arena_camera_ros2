@@ -30,7 +30,8 @@
 class ArenaCameraNode : public rclcpp::Node
 {
  public:
-  ArenaCameraNode() : Node("arena_camera_node")
+  explicit ArenaCameraNode(const rclcpp::NodeOptions& options = rclcpp::NodeOptions())
+    : Node("arena_camera_node", options)
   {
     setvbuf(stdout, NULL, _IONBF, BUFSIZ);
 
