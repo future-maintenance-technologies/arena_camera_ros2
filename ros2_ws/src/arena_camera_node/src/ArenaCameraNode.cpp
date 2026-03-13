@@ -1,9 +1,11 @@
 #include <cstring>    // memcopy
 #include <stdexcept>  // std::runtime_err
 #include <string>
+#include <mutex>
 
 // ROS
 #include "rmw/types.h"
+#include <rclcpp_components/register_node_macro.hpp>
 
 // ArenaSDK
 #include "ArenaCameraNode.h"
@@ -11,6 +13,34 @@
 #include "rclcpp_adapter/pixelformat_translation.h"
 #include "rclcpp_adapter/quilty_of_service_translation.cpp"
 #include "sensor_msgs/msg/compressed_image.hpp"
+
+// ---------------------------------------------------------------------------
+// Process-wide Arena::ISystem singleton
+//
+// Arena::OpenSystem() must be called only once per process — calling it
+// multiple times (e.g. from different composable node instances) throws.
+// This helper keeps a weak_ptr so the real shared_ptr is reference-counted
+// across all ArenaCameraNode instances; CloseSystem is called only when the
+// last instance is destroyed.
+// ---------------------------------------------------------------------------
+static std::shared_ptr<Arena::ISystem> get_arena_system()
+{
+  static std::weak_ptr<Arena::ISystem> s_weak;
+  static std::mutex s_mutex;
+
+  std::lock_guard<std::mutex> lock(s_mutex);
+  auto system = s_weak.lock();
+  if (!system) {
+    system = std::shared_ptr<Arena::ISystem>(
+      Arena::OpenSystem(),
+      [](Arena::ISystem* p) {
+        if (p) Arena::CloseSystem(p);
+      }
+    );
+    s_weak = system;
+  }
+  return system;
+}
 
 void ArenaCameraNode::parse_parameters_()
 {
@@ -92,15 +122,11 @@ void ArenaCameraNode::initialize_()
 {
   using namespace std::chrono_literals;
   // ARENASDK ---------------------------------------------------------------
-  // Custom deleter for system
-  m_pSystem =
-      std::shared_ptr<Arena::ISystem>(nullptr, [=](Arena::ISystem* pSystem) {
-        if (pSystem) {  // this is an issue for multi devices
-          Arena::CloseSystem(pSystem);
-          log_info("System is destroyed");
-        }
-      });
-  m_pSystem.reset(Arena::OpenSystem());
+  // Obtain the process-wide Arena::ISystem singleton.
+  // Arena::OpenSystem() may only be called once per process; subsequent
+  // composable node instances reuse the same system and CloseSystem is
+  // called only when the last shared_ptr owner is destroyed.
+  m_pSystem = get_arena_system();
 
   // Custom deleter for device
   m_pDevice =
@@ -834,3 +860,5 @@ void ArenaCameraNode::set_nodes_test_pattern_image_()
   auto nodemap = m_pDevice->GetNodeMap();
   Arena::SetNodeValue<GenICam::gcstring>(nodemap, "TestPattern", "Pattern3");
 }
+
+RCLCPP_COMPONENTS_REGISTER_NODE(ArenaCameraNode)
