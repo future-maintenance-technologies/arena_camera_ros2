@@ -1,7 +1,6 @@
 #include "gpu_compressor.hpp"
 #include "qsv_encoder.hpp"
 #include "dmabuf_surface_pool.hpp"
-
 #include <stdexcept>
 
 // ---------------------------------------------------------------------------
@@ -48,7 +47,7 @@ GpuCompressor::GpuCompressor(int width, int height, int framerate,
         DMABUF_POOL_SIZE,
         encoder_->hw_frames_ctx(),
         encoder_->va_display(),
-        q_);
+        q_);        
 }
 
 GpuCompressor::~GpuCompressor()
@@ -66,61 +65,107 @@ GpuCompressor::~GpuCompressor()
 
 void GpuCompressor::bayer_to_tiled_nv12(DmaBufSurface& surface)
 {
-    const size_t w      = width_;
-    const size_t h      = height_;
-    const size_t half_w = w / 2;
-    const size_t half_h = h / 2;
-    const size_t pitch  = surface.y_pitch;
-    const size_t y_off  = surface.y_offset;
+    const size_t w = width_;
+    const size_t h = height_;
 
-    uint8_t* in  = d_input_;
-    uint8_t* out = surface.sycl_ptr;
+    const size_t half_w = w >> 1;
+    const size_t half_h = h >> 1;
 
-    // Separate Bayer channels into quadrants for spatial-aware compression.
-    // Each 2×2 Bayer block contributes one pixel to each quadrant:
-    //   TL = (even row, even col)   TR = (even row, odd col)
-    //   BL = (odd  row, even col)   BR = (odd  row, odd col)
-    //
-    // Writes only the Y plane at the surface's y_offset with y_pitch stride.
-    // UV plane stays at 128 (pre-set at pool construction time).
-    q_.parallel_for(
-        sycl::range<2>(h, w),
-        [=](sycl::id<2> idx) {
-            const size_t row = idx[0];
-            const size_t col = idx[1];
-
-            const uint8_t val = in[row * w + col];
-
-            const size_t sub_row = row / 2;
-            const size_t sub_col = col / 2;
-
-            const size_t quad_x = (col & 1) ? half_w : 0;
-            const size_t quad_y = (row & 1) ? half_h : 0;
-
-            out[y_off + (quad_y + sub_row) * pitch + (quad_x + sub_col)] = val;
-        }
-    );
-    // No .wait() — in-order queue serializes with the next operation.
-}
-
-void GpuCompressor::mono8_to_nv12(DmaBufSurface& surface)
-{
-    const size_t w     = width_;
-    const size_t h     = height_;
     const size_t pitch = surface.y_pitch;
     const size_t y_off = surface.y_offset;
 
     uint8_t* in  = d_input_;
     uint8_t* out = surface.sycl_ptr;
 
-    q_.parallel_for(
-        sycl::range<2>(h, w),
-        [=](sycl::id<2> idx) {
-            const size_t row = idx[0];
-            const size_t col = idx[1];
+    constexpr size_t WG_X = 16;
+    constexpr size_t WG_Y = 16;
 
-            const uint8_t val = in[row * w + col];
-            out[y_off + row * pitch + col] = val;  // Y plane
+    size_t global_y = ((half_h + WG_Y - 1) / WG_Y) * WG_Y;
+    size_t global_x = ((half_w + WG_X - 1) / WG_X) * WG_X;
+
+    sycl::nd_range<2> launch(
+        {global_y, global_x},
+        {WG_Y, WG_X}
+    );
+
+    q_.parallel_for(
+        launch,
+        [=](sycl::nd_item<2> item)
+        {
+            const size_t r = item.get_global_id(0);
+            const size_t c = item.get_global_id(1);
+
+            if (r >= half_h || c >= half_w)
+                return;
+
+            const size_t in_row = r << 1;
+            const size_t in_col = c << 1;
+
+            const size_t base = in_row * w + in_col;
+
+            uint8_t p00 = in[base];
+            uint8_t p01 = in[base + 1];
+            uint8_t p10 = in[base + w];
+            uint8_t p11 = in[base + w + 1];
+
+            const size_t y0 = y_off + r * pitch + c;
+            const size_t y1 = y_off + r * pitch + (c + half_w);
+            const size_t y2 = y_off + (r + half_h) * pitch + c;
+            const size_t y3 = y_off + (r + half_h) * pitch + (c + half_w);
+
+            out[y0] = p00;
+            out[y1] = p01;
+            out[y2] = p10;
+            out[y3] = p11;
+        }
+    );
+}
+
+void GpuCompressor::mono8_to_nv12(DmaBufSurface& surface)
+{
+    const size_t w = width_;
+    const size_t h = height_;
+
+    const size_t pitch = surface.y_pitch;
+    const size_t y_off = surface.y_offset;
+
+    uint8_t* in  = d_input_;
+    uint8_t* out = surface.sycl_ptr;
+
+    constexpr size_t WG_X = 16;
+    constexpr size_t WG_Y = 16;
+
+    constexpr size_t vec_width = 16;
+
+    const size_t w_vec = w / vec_width;
+
+    size_t global_y = ((h + WG_Y - 1) / WG_Y) * WG_Y;
+    size_t global_x = ((w_vec + WG_X - 1) / WG_X) * WG_X;
+
+    sycl::nd_range<2> launch(
+        {global_y, global_x},
+        {WG_Y, WG_X}
+    );
+
+    q_.parallel_for(
+        launch,
+        [=](sycl::nd_item<2> item)
+        {
+            const size_t row = item.get_global_id(0);
+            const size_t col = item.get_global_id(1);
+
+            if (row >= h || col >= w_vec)
+                return;
+
+            const size_t in_offset  = row * w + col * vec_width;
+            const size_t out_offset = y_off + row * pitch + col * vec_width;
+
+            const uint8_t* src = in + in_offset;
+            uint8_t* dst = out + out_offset;
+
+            #pragma unroll
+            for (int i = 0; i < vec_width; i++)
+                dst[i] = src[i];
         }
     );
 }
