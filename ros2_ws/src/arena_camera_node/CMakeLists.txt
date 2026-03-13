@@ -20,7 +20,7 @@ endif()
 set(SYCL_FLAGS "-fsycl")
 
 add_compile_options(${SYCL_FLAGS})
-add_link_options(${SYCL_FLAGS})
+add_link_options(${SYCL_FLAGS} -Wl,--allow-shlib-undefined)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 	# linked GenICam hearders give warnings No such file or directory
@@ -73,7 +73,7 @@ pkg_check_modules(LIBVA REQUIRED libva libva-drm)
 # --------------------
 
 # Set Arena SDK library paths
-set(ARENA_SDK_LIB_PATH "/home/fmt/dev/ArenaViewMP_Linux_x64/ArenaSDK_Linux_x64")
+set(ARENA_SDK_LIB_PATH "/home/ariis-pc/dev/ArenaViewMP_v_1.0.0.10_Linux_x64/ArenaSDK_Linux_x64")
 set(ARENA_RPATH_DIRS
     "${ARENA_SDK_LIB_PATH}/lib64"
     "${ARENA_SDK_LIB_PATH}/GenICam/library/lib/Linux64_x64"
