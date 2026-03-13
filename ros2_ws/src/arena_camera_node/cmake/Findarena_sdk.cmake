@@ -3,7 +3,7 @@ set(_LOG_LVL DEBUG) # does not filter as it should
 set(_LOG_LVL_FRMT "-- [ ${_LOG_LVL} ] ")
 
 # the installation script place
-set(_arena_sdk_conf "/home/fmt/dev/workspace/arena_camera_ros2/resources/ArenaSDK/Arena_SDK.conf")
+set(_arena_sdk_conf "/home/ariis-pc/dev/workspace/arena_camera_ros2/resources/ArenaSDK/Arena_SDK.conf")
 
 
 if(EXISTS ${_arena_sdk_conf})
