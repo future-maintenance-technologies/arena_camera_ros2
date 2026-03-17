@@ -134,6 +134,8 @@ class ArenaCameraNode : public rclcpp::Node
 
   std::string camera_type_;
 
+  bool is_calibrating_;
+
   // ---- Private methods -----------------------------------------------------
   void parse_parameters_();
   void initialize_();

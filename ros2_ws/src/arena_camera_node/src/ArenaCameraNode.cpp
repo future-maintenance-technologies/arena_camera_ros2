@@ -111,6 +111,9 @@ void ArenaCameraNode::parse_parameters_()
     if (camera_type_ == "") {
       throw std::invalid_argument("Camera type must be provided");
     }
+
+    nextParameterToDeclare = "is_calibrating";
+    is_calibrating_ = this->declare_parameter("is_calibrating", false);
     
   } catch (rclcpp::ParameterTypeException& e) {
     log_err(nextParameterToDeclare + " argument");
@@ -444,7 +447,7 @@ void ArenaCameraNode::compress_publish_consumer_()
   while (frame_queue_.dequeue(pixel_data, timestamp_ns, frame_id,
                               is_big_endian, bits_per_pixel, data_width)) {
     try {
-      if (pixelformat_ros_ == "bayer_rggb8" || pixelformat_ros_ == "mono8") {
+      if ((pixelformat_ros_ == "bayer_rggb8" || pixelformat_ros_ == "mono8") && !is_calibrating_) {
         // -- Compress to AV1 (reads pixel_data via pointer, no copy) ----------
         bool compressed_ok = false;
         auto compressed_msg = std::make_unique<sensor_msgs::msg::CompressedImage>();
