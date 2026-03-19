@@ -74,7 +74,7 @@ pkg_check_modules(LIBVA REQUIRED libva libva-drm)
 # --------------------
 
 # Set Arena SDK library paths
-set(ARENA_SDK_LIB_PATH "/home/ariis-pc/dev/ArenaViewMP_v_1.0.0.10_Linux_x64/ArenaSDK_Linux_x64")
+set(ARENA_SDK_LIB_PATH "$ENV{ARENA_SDK_ROOT}")
 set(ARENA_RPATH_DIRS
     "${ARENA_SDK_LIB_PATH}/lib64"
     "${ARENA_SDK_LIB_PATH}/GenICam/library/lib/Linux64_x64"

@@ -10,3 +10,4 @@ dist
 *.egg-info
 *.tar.gz
 *.whl
+resources/ArenaSDK/Arena_SDK.conf

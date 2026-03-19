@@ -2,27 +2,24 @@
 set(_LOG_LVL DEBUG) # does not filter as it should 
 set(_LOG_LVL_FRMT "-- [ ${_LOG_LVL} ] ")
 
-# the installation script place
-set(_arena_sdk_conf "/home/ariis-pc/dev/workspace/arena_camera_ros2/resources/ArenaSDK/Arena_SDK.conf")
-
-
-if(EXISTS ${_arena_sdk_conf})
-
-	###### --------------------------------------------------------------------
-	# ROOT
-	######
-
-	# get first line in Arena_SDK.conf which is the lib64 path. then get the
-	# parent direcotry of the first path which suppose to be the location of
-	# the installed ArenaSDK
+# Resolve the Arena SDK root:
+#   1. Prefer the ARENA_SDK_ROOT environment variable (set per-machine in ~/.bashrc).
+#   2. Fall back to reading Arena_SDK.conf (path relative to this file).
+if(DEFINED ENV{ARENA_SDK_ROOT})
+	set(arena_sdk_installation_root "$ENV{ARENA_SDK_ROOT}")
+	message(${_LOG_LVL_FRMT} "arena_sdk_installation_root from ARENA_SDK_ROOT env var = ${arena_sdk_installation_root}")
+else()
+	set(_arena_sdk_conf "${CMAKE_CURRENT_LIST_DIR}/../../../resources/ArenaSDK/Arena_SDK.conf")
+	if(NOT EXISTS ${_arena_sdk_conf})
+		message(FATAL_ERROR "ARENA_SDK_ROOT env var not set and Arena_SDK.conf not found at ${_arena_sdk_conf}. "
+			"Set ARENA_SDK_ROOT in your environment (e.g. in ~/.bashrc) to the ArenaSDK installation root.")
+	endif()
 	execute_process(
 		COMMAND bash -c "dirname $(head -n 1 \"${_arena_sdk_conf}\")"
-		OUTPUT_VARIABLE arena_sdk_installation_root
-		#ENCODING UTF8
-		)
+		OUTPUT_VARIABLE arena_sdk_installation_root)
 	string(STRIP ${arena_sdk_installation_root} arena_sdk_installation_root)
-
-	message(${_LOG_LVL_FRMT} "arena_sdk_installation_root = ${arena_sdk_installation_root}")
+	message(${_LOG_LVL_FRMT} "arena_sdk_installation_root from Arena_SDK.conf = ${arena_sdk_installation_root}")
+endif()
 
 	######### -----------------------------------------------------------------
 	# INCLUDE
@@ -174,9 +171,3 @@ if(EXISTS ${_arena_sdk_conf})
 	set(arena_sdk_FOUND true)
 
 	#message(${_LOG_LVL_FRMT} "arena_sdk_FOUND = ${arena_sdk_FOUND}")
-
-else()
-	message( FATAL_ERROR "ArenaSDK is not installed. Please isntall ArenaSDK "
-						 "using the script provided by LUCID support "
-						 "team (support@thinklucid.com). ")
-endif()
