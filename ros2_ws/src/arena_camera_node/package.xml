@@ -9,11 +9,14 @@
   <maintainer email="support@thinklucid.com">LUCID Vision Labs</maintainer>
   <license>MIT</license>
 
+  <buildtool_depend>ament_cmake_auto</buildtool_depend>
+
   <depend>rclcpp</depend>
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
 
-  <buildtool_depend>ament_cmake_auto</buildtool_depend>
+  <depend>libva-dev</depend>
+  <depend>libze-dev</depend>
 
   <export>
     <build_type>ament_cmake</build_type>
