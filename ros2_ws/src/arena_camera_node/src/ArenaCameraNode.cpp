@@ -100,9 +100,12 @@ void ArenaCameraNode::parse_parameters_()
     nextParameterToDeclare = "frame_id";
     frame_id_ = this->declare_parameter("frame_id", "camera_frame");
 
+    nextParameterToDeclare = "is_calibrating";
+    is_calibrating_ = this->declare_parameter("is_calibrating", false);
+
     nextParameterToDeclare = "qsv_device";
     qsv_device_ = this->declare_parameter("qsv_device", "");
-    if (qsv_device_ == "") {
+    if (qsv_device_ == "" && !is_calibrating_) {
       throw std::invalid_argument("QSV Device must be provided");
     }
 
@@ -111,9 +114,6 @@ void ArenaCameraNode::parse_parameters_()
     if (camera_type_ == "") {
       throw std::invalid_argument("Camera type must be provided");
     }
-
-    nextParameterToDeclare = "is_calibrating";
-    is_calibrating_ = this->declare_parameter("is_calibrating", false);
     
   } catch (rclcpp::ParameterTypeException& e) {
     log_err(nextParameterToDeclare + " argument");
@@ -347,7 +347,7 @@ void ArenaCameraNode::run_()
 
   // Create only the publisher that matches the chosen pixelformat.
   auto topic_str = this->get_parameter("topic").as_string();
-  if (pixelformat_ros_ == "bayer_rggb8" || pixelformat_ros_ == "mono8") {
+  if ((pixelformat_ros_ == "bayer_rggb8" || pixelformat_ros_ == "mono8") && !is_calibrating_) {
     log_info("Initializing GPU compressor for AV1 encoding...");
     log_info(std::string("Using QSV device: ") + qsv_device_);
     compressor_ = std::make_unique<GpuCompressor>(width_, height_, 22, qsv_device_.c_str());
