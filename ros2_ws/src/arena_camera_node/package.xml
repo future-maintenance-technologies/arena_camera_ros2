@@ -15,9 +15,6 @@
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
 
-  <depend>libva-dev</depend>
-  <depend>libze-dev</depend>
-
   <export>
     <build_type>ament_cmake</build_type>
   </export>

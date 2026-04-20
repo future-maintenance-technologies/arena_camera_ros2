@@ -1,7 +1,7 @@
-#include <cstring>    // memcopy
+// clang-format off
+#include <cstring>  // memcopy
 #include <stdexcept>  // std::runtime_err
 #include <string>
-#include <mutex>
 
 // ROS
 #include "rmw/types.h"
@@ -12,7 +12,6 @@
 #include "light_arena/deviceinfo_helper.h"
 #include "rclcpp_adapter/pixelformat_translation.h"
 #include "rclcpp_adapter/quilty_of_service_translation.cpp"
-#include "sensor_msgs/msg/compressed_image.hpp"
 
 // ---------------------------------------------------------------------------
 // Process-wide Arena::ISystem singleton
@@ -99,15 +98,6 @@ void ArenaCameraNode::parse_parameters_()
 
     nextParameterToDeclare = "frame_id";
     frame_id_ = this->declare_parameter("frame_id", "camera_frame");
-
-    nextParameterToDeclare = "is_calibrating";
-    is_calibrating_ = this->declare_parameter("is_calibrating", false);
-
-    nextParameterToDeclare = "qsv_device";
-    qsv_device_ = this->declare_parameter("qsv_device", "");
-    if (qsv_device_ == "" && !is_calibrating_) {
-      throw std::invalid_argument("QSV Device must be provided");
-    }
 
     nextParameterToDeclare = "camera_type";
     camera_type_ = this->declare_parameter("camera_type", "");
@@ -213,13 +203,10 @@ void ArenaCameraNode::initialize_()
     }
   }
 
-  // Save resolved QoS so run_() can use it when creating the publisher.
   pub_qos_ = pub_qos;
 
-  // Publishers are created in run_() once pixelformat_ros_ is finalised by
-  // set_nodes_pixelformat_().  Only one publisher (raw OR compressed) is
-  // created, which prevents the "multiple types on the same topic" error that
-  // occurs when both publishers advertise on the DDS graph simultaneously.
+  m_pub_ = this->create_publisher<sensor_msgs::msg::Image>(topic_, pub_qos_);
+  log_info(std::string("Publishing raw Image on: ") + topic_);
 
   std::stringstream pub_qos_info;
   auto pub_qos_profile = pub_qos_.get_rmw_qos_profile();
@@ -263,249 +250,46 @@ void ArenaCameraNode::wait_for_device_timer_callback_()
   }
 }
 
-void ArenaCameraNode::telemetry_timer_callback_()
-{
-  // ---- compressor stats ----------------------------------------------------
-  const uint64_t frames_dropped    = compressor_ ? compressor_->frames_dropped()   : 0;
-  const uint64_t frames_compressed = compressor_ ? compressor_->frames_compressed(): 0;
-  const uint64_t total_frames      = frames_compressed + frames_dropped;
-
-  const double drop_rate = total_frames > 0
-      ? (100.0 * frames_dropped / total_frames)
-      : 0.0;
-
-  const double avg_gpu_time_ms = (compressor_ && frames_compressed > 0)
-      ? (compressor_->total_gpu_time_us() / 1000.0 / frames_compressed)
-      : 0.0;
-
-  const double avg_encode_time_ms = (compressor_ && frames_compressed > 0)
-      ? (compressor_->total_encode_time_us() / 1000.0 / frames_compressed)
-      : 0.0;
-
-  // ---- queue / producer stats ----------------------------------------------
-  const size_t   queue_depth  = frame_queue_.depth();
-  const uint64_t queue_stalls = frame_queue_.enqueue_stalls();
-
-  // Human-readable producer state.
-  auto pstate_raw = static_cast<ProducerState>(
-      producer_state_.load(std::memory_order_relaxed));
-  const char* pstate_str = [pstate_raw]() -> const char* {
-    switch (pstate_raw) {
-      case ProducerState::Idle:         return "idle";
-      case ProducerState::WaitingImage: return "WAITING_FOR_IMAGE (GetImage blocked)";
-      case ProducerState::Enqueueing:   return "ENQUEUEING (queue full — GPU bottleneck)";
-      case ProducerState::Processing:   return "processing";
-    }
-    return "unknown";
-  }();
-
-  // Time since the last successful GetImage() return.
-  const int64_t last_rx_ns = last_frame_received_mono_ns_.load(std::memory_order_relaxed);
-  double secs_since_last_frame = -1.0;
-  if (last_rx_ns > 0) {
-    const int64_t now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-    secs_since_last_frame = (now_ns - last_rx_ns) / 1e9;
-  }
-
-  RCLCPP_INFO(this->get_logger(),
-    "\n=== Camera Telemetry ===\n"
-    "  Frames received:          %lu\n"
-    "  Frames published:         %lu (compressed)\n"
-    "  Frames compressed:        %lu\n"
-    "  Encoder drops:            %lu (%.2f%% of compressed+dropped)\n"
-    "  Compression failures:     %lu\n"
-    "  Avg GPU time:             %.2f ms\n"
-    "  Avg encode time:          %.2f ms\n"
-    "  Total pipeline time:      %.2f ms/frame\n"
-    "  --- Queue / Producer ---\n"
-    "  Queue depth:              %zu / 4\n"
-    "  Queue stalls (enqueue):   %lu  ← non-zero = GPU is back-pressuring producer\n"
-    "  Producer state:           %s\n"
-    "  Secs since last frame:    %.3f s  ← large = GetImage() stalled (camera buffer starved)",
-    frames_received_.load(std::memory_order_relaxed),
-    frames_published_.load(std::memory_order_relaxed),
-    frames_compressed,
-    frames_dropped,
-    drop_rate,
-    compression_failures_.load(std::memory_order_relaxed),
-    avg_gpu_time_ms,
-    avg_encode_time_ms,
-    avg_gpu_time_ms + avg_encode_time_ms,
-    queue_depth,
-    queue_stalls,
-    pstate_str,
-    secs_since_last_frame
-  );
-}
-
 void ArenaCameraNode::run_()
 {
   auto device = create_device_ros_();
   m_pDevice.reset(device);
   set_nodes_();
-
-  // Create only the publisher that matches the chosen pixelformat.
-  auto topic_str = this->get_parameter("topic").as_string();
-  if ((pixelformat_ros_ == "bayer_rggb8" || pixelformat_ros_ == "mono8") && !is_calibrating_) {
-    log_info("Initializing GPU compressor for AV1 encoding...");
-    log_info(std::string("Using QSV device: ") + qsv_device_);
-    compressor_ = std::make_unique<GpuCompressor>(width_, height_, 22, qsv_device_.c_str());
-    RCLCPP_INFO(this->get_logger(), "GPU compressor initialized on: %s", compressor_->device_name().c_str());
-    m_pub_compressed_ = this->create_publisher<sensor_msgs::msg::CompressedImage>(topic_str + "_compressed", pub_qos_);
-    log_info(std::string("Publishing CompressedImage on: ") + topic_str + "_compressed");
-  }
-  // Also create raw publisher for debug inspection
-  m_pub_ = this->create_publisher<sensor_msgs::msg::Image>(topic_str, pub_qos_);
-  log_info(std::string("Publishing raw Image (debug) on: ") + topic_str);
-
-  using namespace std::chrono_literals;
-  m_telemetry_timer_ = this->create_wall_timer(
-      5s, std::bind(&ArenaCameraNode::telemetry_timer_callback_, this));
-
   m_pDevice->StartStream();
-
-  // Pre-allocate all queue buffers using the device's exact payload size.
-  frame_size_bytes_ = static_cast<size_t>(
-      Arena::GetNodeValue<int64_t>(m_pDevice->GetNodeMap(), "PayloadSize"));
-  frame_queue_.reserve_buffers(frame_size_bytes_);
-
-  producer_thread_ = std::thread(&ArenaCameraNode::camera_producer_, this);
-  consumer_thread_ = std::thread(&ArenaCameraNode::compress_publish_consumer_, this);
-  log_info("Streaming — producer and consumer threads launched");
+  publish_images_();
 }
 
-// -----------------------------------------------------------------------------
-// Producer: capture frames from camera → enqueue
-// -----------------------------------------------------------------------------
-void ArenaCameraNode::camera_producer_()
+void ArenaCameraNode::publish_images_()
 {
   Arena::IImage* pImage = nullptr;
-
-  auto set_state = [this](ProducerState s) {
-    producer_state_.store(static_cast<uint8_t>(s), std::memory_order_relaxed);
-  };
-
-  while (running_.load() && rclcpp::ok()) {
+  while (rclcpp::ok()) {
     try {
-      set_state(ProducerState::WaitingImage);
-      pImage = m_pDevice->GetImage(999999999999);
+      auto p_image_msg = std::make_unique<sensor_msgs::msg::Image>();
+      // std::cout << "error 1" << "\n";
+      pImage = m_pDevice->GetImage(999999999999);  // time before timeout
+      // std::cout << "error 2" << "\n";
+      msg_form_image_(pImage, *p_image_msg);
+      // std::cout << "error 3" << "\n";
 
-      set_state(ProducerState::Processing);
-      frames_received_.fetch_add(1, std::memory_order_relaxed);
-      // Record wall-clock time of this successful GetImage() return so the
-      // telemetry timer can detect if GetImage() stalls in the future.
-      last_frame_received_mono_ns_.store(
-          std::chrono::duration_cast<std::chrono::nanoseconds>(
-              std::chrono::steady_clock::now().time_since_epoch())
-              .count(),
-          std::memory_order_relaxed);
+      m_pub_->publish(std::move(p_image_msg));
 
-      auto pixel_bytes = pImage->GetBitsPerPixel() / 8;
-      auto total_bytes = pImage->GetWidth() * pImage->GetHeight() * pixel_bytes;
-
-      set_state(ProducerState::Enqueueing);
-      bool ok = frame_queue_.enqueue(
-          pImage->GetData(), total_bytes,
-          pImage->GetTimestampNs(),
-          pImage->GetFrameId(),
-          pImage->GetPixelEndianness() == Arena::EPixelEndianness::PixelEndiannessBig,
-          pImage->GetBitsPerPixel(),
-          pImage->GetWidth());
-
-      set_state(ProducerState::Processing);
-      m_pDevice->RequeueBuffer(pImage);
-      pImage = nullptr;
-
-      if (!ok) break;  // shutdown requested
+      log_debug(std::string("image ") + std::to_string(pImage->GetFrameId()) +
+                " published to " + topic_);
+      this->m_pDevice->RequeueBuffer(pImage);
 
     } catch (std::exception& e) {
       if (pImage) {
         m_pDevice->RequeueBuffer(pImage);
         pImage = nullptr;
+        log_warn(std::string("Exception occurred while publishing an image\n") +
+                 e.what());
       }
-      log_warn(std::string("Producer: ") + e.what());
     }
-  }
-  set_state(ProducerState::Idle);
+  };
 }
 
-// -----------------------------------------------------------------------------
-// Consumer: dequeue → compress → publish
-// -----------------------------------------------------------------------------
-void ArenaCameraNode::compress_publish_consumer_()
-{
-  std::vector<uint8_t> pixel_data;
-  pixel_data.reserve(frame_size_bytes_);
-
-  int64_t  timestamp_ns   = 0;
-  uint64_t frame_id       = 0;
-  bool     is_big_endian  = false;
-  size_t   bits_per_pixel = 0;
-  size_t   data_width     = 0;
-
-  while (frame_queue_.dequeue(pixel_data, timestamp_ns, frame_id,
-                              is_big_endian, bits_per_pixel, data_width)) {
-    try {
-      if ((pixelformat_ros_ == "bayer_rggb8" || pixelformat_ros_ == "mono8") && !is_calibrating_) {
-        // -- Compress to AV1 (reads pixel_data via pointer, no copy) ----------
-        bool compressed_ok = false;
-        auto compressed_msg = std::make_unique<sensor_msgs::msg::CompressedImage>();
-        compressed_msg->header.stamp.sec     = static_cast<uint32_t>(timestamp_ns / 1000000000);
-        compressed_msg->header.stamp.nanosec = static_cast<uint32_t>(timestamp_ns % 1000000000);
-        compressed_msg->header.frame_id      = frame_id_;
-        if (pixelformat_ros_ == "bayer_rggb8") {
-          compressed_msg->format = "av1;nv12;tiled_bayer_rggb8;bayer_rggb8";
-        } else {
-          compressed_msg->format = "av1;nv12;mono8";
-        }
-
-        try {
-          auto av1 = compressor_->compress(pixel_data.data(), pixelformat_ros_, timestamp_ns);
-          if (av1) {
-            compressed_msg->data = std::move(*av1);
-            frames_compressed_.fetch_add(1, std::memory_order_relaxed);
-            compressed_ok = true;
-          } else {
-            log_warn("Frame dropped — encoder saturated");
-            compression_failures_.fetch_add(1, std::memory_order_relaxed);
-          }
-        } catch (std::exception& e) {
-          compression_failures_.fetch_add(1, std::memory_order_relaxed);
-          log_warn(std::string("Compression failed: ") + e.what());
-        }
-
-        if (compressed_ok) {
-          m_pub_compressed_->publish(std::move(compressed_msg));
-          frames_published_.fetch_add(1, std::memory_order_relaxed);
-        }
-      } else {
-        // -- Build and publish raw Image message (move pixel_data in) ---------
-        auto image_msg = std::make_unique<sensor_msgs::msg::Image>();
-        image_msg->header.stamp.sec     = static_cast<uint32_t>(timestamp_ns / 1000000000);
-        image_msg->header.stamp.nanosec = static_cast<uint32_t>(timestamp_ns % 1000000000);
-        image_msg->header.frame_id      = frame_id_;
-        image_msg->height               = height_;
-        image_msg->width                = width_;
-        image_msg->encoding             = pixelformat_ros_;
-        image_msg->is_bigendian         = is_big_endian;
-        image_msg->step = static_cast<sensor_msgs::msg::Image::_step_type>(
-            data_width * (bits_per_pixel / 8));
-        image_msg->data = std::move(pixel_data);
-          
-        m_pub_->publish(std::move(image_msg));
-      }
-    } catch (std::exception& e) {
-      log_warn(std::string("Consumer: ") + e.what());
-    }
-
-    // Restore pixel_data capacity for the next dequeue swap chain.
-    pixel_data.reserve(frame_size_bytes_);
-  }
-}
-
-
-void ArenaCameraNode::msg_form_image_(Arena::IImage* pImage, sensor_msgs::msg::Image& image_msg)
+void ArenaCameraNode::msg_form_image_(Arena::IImage* pImage,
+                                      sensor_msgs::msg::Image& image_msg)
 {
   try {
     // 1 ) Header
@@ -562,38 +346,6 @@ void ArenaCameraNode::msg_form_image_(Arena::IImage* pImage, sensor_msgs::msg::I
     log_warn(
         "Failed to create Image ROS MSG. Published Image Msg might be "
         "corrupted");
-  }
-}
-
-void ArenaCameraNode::msg_form_compressed_image_(Arena::IImage* pImage, sensor_msgs::msg::CompressedImage& image_msg)
-{
-  try {
-    // Header
-    image_msg.header.stamp.sec =
-        static_cast<uint32_t>(pImage->GetTimestampNs() / 1000000000);
-    image_msg.header.stamp.nanosec =
-        static_cast<uint32_t>(pImage->GetTimestampNs() % 1000000000);
-    image_msg.header.frame_id = frame_id_;
-
-    image_msg.format = "av1";
-
-    // Compress Bayer → AV1 via GPU pipeline
-    auto compressed = compressor_->compress(pImage->GetData(), pixelformat_ros_, pImage->GetTimestampNs());
-    
-    if (compressed) {
-      image_msg.data = std::move(*compressed);
-      frames_compressed_.fetch_add(1, std::memory_order_relaxed);
-    } else {
-      // Frame was dropped due to encoder saturation
-      log_warn("Frame dropped - encoder saturated");
-      compression_failures_.fetch_add(1, std::memory_order_relaxed);
-      // Publish empty data to maintain message flow
-      image_msg.data.clear();
-    }
-
-  } catch (std::exception& e) {
-    compression_failures_.fetch_add(1, std::memory_order_relaxed);
-    log_warn(std::string("Failed to compress image: ") + e.what());
   }
 }
 
@@ -865,3 +617,4 @@ void ArenaCameraNode::set_nodes_test_pattern_image_()
 }
 
 RCLCPP_COMPONENTS_REGISTER_NODE(ArenaCameraNode)
+// clang-format on

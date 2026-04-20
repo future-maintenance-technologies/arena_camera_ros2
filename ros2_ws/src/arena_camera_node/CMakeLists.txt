@@ -1,26 +1,14 @@
 cmake_minimum_required(VERSION 3.15)
 
-# Use Intel ICPX compiler with SYCL support
-set(CMAKE_C_COMPILER icx)
-set(CMAKE_CXX_COMPILER icpx)
-
 project(arena_camera_node)
 
-# Default to C99
 if(NOT CMAKE_C_STANDARD)
   set(CMAKE_C_STANDARD 99)
 endif()
 
-# Default to C++17 (required by SYCL)
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
 endif()
-
-# SYCL flags
-set(SYCL_FLAGS "-fsycl")
-
-add_compile_options(${SYCL_FLAGS})
-add_link_options(${SYCL_FLAGS} -Wl,--allow-shlib-undefined)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 	# linked GenICam hearders give warnings No such file or directory
@@ -61,13 +49,6 @@ find_package(sensor_msgs REQUIRED)
 find_package(arena_sdk REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(FFMPEG REQUIRED
-  libavcodec
-  libavutil
-  libavformat
-  libswscale
-)
-pkg_check_modules(LIBVA REQUIRED libva libva-drm)
 
 # --------------------
 # RUNTIME LIBRARY PATH
@@ -163,16 +144,11 @@ add_library(${component_name} SHARED
     src/light_arena/deviceinfo_helper.cpp
     src/rclcpp_adapter/pixelformat_translation.cpp
     src/rclcpp_adapter/quilty_of_service_translation.cpp
-    src/gpu_compressor.cpp
-    src/qsv_encoder.cpp
-    src/dmabuf_surface_pool.cpp
 )
 
 target_include_directories(${component_name}
   PRIVATE
     ${arena_sdk_INCLUDE_DIRS}
-    ${FFMPEG_INCLUDE_DIRS}
-    ${LIBVA_INCLUDE_DIRS}
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
@@ -188,9 +164,6 @@ ament_target_dependencies(${component_name}
 )
 target_link_libraries(${component_name}
   ${OpenCV_LIBRARIES}
-  ${FFMPEG_LINK_LIBRARIES}
-  ${LIBVA_LINK_LIBRARIES}
-  ze_loader
 )
 
 # Register the component and generate a standalone "start" executable
