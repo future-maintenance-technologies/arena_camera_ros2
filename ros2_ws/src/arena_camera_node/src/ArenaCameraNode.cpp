@@ -79,6 +79,9 @@ void ArenaCameraNode::parse_parameters_()
     trigger_mode_activated_ = this->declare_parameter("trigger_mode", false);
     // no need to is_passed_trigger_mode_ because it is already a boolean
 
+    nextParameterToDeclare = "encoder_divider";
+    encoder_divider_ = this->declare_parameter("encoder_divider", 65535);
+
     nextParameterToDeclare = "topic";
     topic_ = this->declare_parameter(
         "topic", std::string("/") + this->get_name() + "/images");
@@ -588,13 +591,13 @@ void ArenaCameraNode::set_nodes_trigger_mode_()
     Arena::SetNodeValue<GenICam::gcstring>(nodemap, "EncoderSourceA","Line3");
     Arena::SetNodeValue<GenICam::gcstring>(nodemap, "EncoderSourceB","Line2");
     Arena::SetNodeValue<GenICam::gcstring>(nodemap, "EncoderMode", "FourPhase");
-    Arena::SetNodeValue<int64_t>(nodemap, "EncoderDivider",1);
+    Arena::SetNodeValue<int64_t>(nodemap, "EncoderDivider", encoder_divider_);
     Arena::SetNodeValue<GenICam::gcstring>(nodemap, "EncoderOutputMode","Motion");
     Arena::SetNodeValue<GenICam::gcstring>(nodemap, "TriggerMode", "On");
     Arena::SetNodeValue<GenICam::gcstring>(nodemap, "TriggerSource", "Encoder0");
     Arena::SetNodeValue<GenICam::gcstring>(nodemap, "TriggerSelector", "FrameStart");
     Arena::SetNodeValue<GenICam::gcstring>(nodemap, "TriggerActivation","RisingEdge");
-                                                            
+
     auto msg =
         std::string(
             "\ttrigger_mode is activated. To trigger an image run `ros2 run ") +
@@ -606,6 +609,9 @@ void ArenaCameraNode::set_nodes_trigger_mode_()
   // the user default profile
   else {
     Arena::SetNodeValue<GenICam::gcstring>(nodemap, "TriggerMode", "Off");
+
+    auto msg = std::string("\ttrigger_mode is OFF");
+    log_warn(msg);
   }
 }
 

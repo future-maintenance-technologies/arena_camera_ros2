@@ -73,6 +73,7 @@ class ArenaCameraNode : public rclcpp::Node
   bool        is_passed_pixelformat_ros_;
 
   bool trigger_mode_activated_;
+  int encoder_divider_;
 
   std::string pub_qos_history_;
   bool        is_passed_pub_qos_history_;
