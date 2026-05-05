@@ -588,13 +588,13 @@ void ArenaCameraNode::set_nodes_trigger_mode_()
     //NEED TO MOVE TO YAML FILE
     Arena::SetNodeValue<GenICam::gcstring>(nodemap, "AcquisitionMode", "Continuous");
     Arena::SetNodeValue<GenICam::gcstring>(nodemap, "EncoderSelector","Encoder0");
-    Arena::SetNodeValue<GenICam::gcstring>(nodemap, "EncoderSourceA","Line0");
-    // Arena::SetNodeValue<GenICam::gcstring>(nodemap, "EncoderSourceB","Line2");
-    Arena::SetNodeValue<GenICam::gcstring>(nodemap, "EncoderMode", "SinglePhase");
+    Arena::SetNodeValue<GenICam::gcstring>(nodemap, "EncoderSourceA","Line3");
+    Arena::SetNodeValue<GenICam::gcstring>(nodemap, "EncoderSourceB","Line2");
+    Arena::SetNodeValue<GenICam::gcstring>(nodemap, "EncoderMode", "FourPhase");
     Arena::SetNodeValue<int64_t>(nodemap, "EncoderDivider", encoder_divider_);
     Arena::SetNodeValue<GenICam::gcstring>(nodemap, "EncoderOutputMode","Motion");
     Arena::SetNodeValue<GenICam::gcstring>(nodemap, "TriggerMode", "On");
-    Arena::SetNodeValue<GenICam::gcstring>(nodemap, "TriggerSource", "Line0");
+    Arena::SetNodeValue<GenICam::gcstring>(nodemap, "TriggerSource", "Encoder0");
     Arena::SetNodeValue<GenICam::gcstring>(nodemap, "TriggerSelector", "FrameStart");
     Arena::SetNodeValue<GenICam::gcstring>(nodemap, "TriggerActivation","RisingEdge");
 
