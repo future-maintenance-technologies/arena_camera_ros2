@@ -595,7 +595,7 @@ void ArenaCameraNode::set_nodes_trigger_mode_()
     Arena::SetNodeValue<GenICam::gcstring>(nodemap, "EncoderOutputMode","Motion");
     Arena::SetNodeValue<GenICam::gcstring>(nodemap, "TriggerMode", "On");
     Arena::SetNodeValue<GenICam::gcstring>(nodemap, "TriggerSource", "Encoder0");
-    Arena::SetNodeValue<GenICam::gcstring>(nodemap, "TriggerSelector", "FrameStart");
+    Arena::SetNodeValue<GenICam::gcstring>(nodemap, "TriggerSelector", "LineStart");
     Arena::SetNodeValue<GenICam::gcstring>(nodemap, "TriggerActivation","RisingEdge");
 
     auto msg =
