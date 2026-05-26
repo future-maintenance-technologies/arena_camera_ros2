@@ -473,7 +473,14 @@ void ArenaCameraNode::set_nodes_load_default_profile_()
   auto nodemap = m_pDevice->GetNodeMap();
   // device run on default profile all the time if no args are passed
   // otherwise, overwise only these params
-  Arena::SetNodeValue<GenICam::gcstring>(nodemap, "UserSetSelector", "Default");
+  // If trigger mode is activated need to load in UserSet1 since TriggerSelector LineStart is not an option
+  // within the SDK. This setting must be set on the camera's onboard memory.
+  if (trigger_mode_activated_) {
+    Arena::SetNodeValue<GenICam::gcstring>(nodemap, "UserSetSelector", "UserSet1");
+  } else {
+    Arena::SetNodeValue<GenICam::gcstring>(nodemap, "UserSetSelector", "Default");
+  }
+
   // execute the profile
   Arena::ExecuteNode(nodemap, "UserSetLoad");
   log_info("\tdefault profile is loaded");
@@ -595,7 +602,7 @@ void ArenaCameraNode::set_nodes_trigger_mode_()
     Arena::SetNodeValue<GenICam::gcstring>(nodemap, "EncoderOutputMode","Motion");
     Arena::SetNodeValue<GenICam::gcstring>(nodemap, "TriggerMode", "On");
     Arena::SetNodeValue<GenICam::gcstring>(nodemap, "TriggerSource", "Encoder0");
-    Arena::SetNodeValue<GenICam::gcstring>(nodemap, "TriggerSelector", "LineStart");
+    // Arena::SetNodeValue<GenICam::gcstring>(nodemap, "TriggerSelector", "FrameStart");
     Arena::SetNodeValue<GenICam::gcstring>(nodemap, "TriggerActivation","RisingEdge");
 
     auto msg =
