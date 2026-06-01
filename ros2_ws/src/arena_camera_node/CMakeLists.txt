@@ -154,15 +154,13 @@ target_include_directories(${component_name}
     $<INSTALL_INTERFACE:include>
 )
 
-ament_target_dependencies(${component_name}
-  rclcpp
-  rclcpp_components
-  std_msgs
-  std_srvs
-  sensor_msgs
-  arena_sdk
-)
 target_link_libraries(${component_name}
+  ${rclcpp_TARGETS}
+  ${rclcpp_components_TARGETS}
+  ${std_msgs_TARGETS}
+  ${std_srvs_TARGETS}
+  ${sensor_msgs_TARGETS}
+  ${arena_sdk_LIBRARIES}
   ${OpenCV_LIBRARIES}
 )
 
@@ -202,8 +200,10 @@ add_executable(${trigger_image} src/trigger_image_client.cpp)
 # ROS DEP
 # - this way it will find our header libs automatically
 # - for ArenAsdk the cmake way is used no ament
-ament_target_dependencies(${trigger_image}  rclcpp 
-                                          std_srvs)
+target_link_libraries(${trigger_image}
+  ${rclcpp_TARGETS}
+  ${std_srvs_TARGETS}
+)
 
 # HEADERS DEP
 target_include_directories(${trigger_image}
