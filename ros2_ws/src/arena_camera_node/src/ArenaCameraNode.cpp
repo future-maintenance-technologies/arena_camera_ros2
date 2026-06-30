@@ -1,4 +1,5 @@
 // clang-format off
+#include <algorithm>  // std::any_of
 #include <cstring>  // memcopy
 #include <stdexcept>  // std::runtime_err
 #include <string>
@@ -240,12 +241,30 @@ void ArenaCameraNode::wait_for_device_timer_callback_()
   m_pSystem->UpdateDevices(100);  // in millisec
   auto device_infos = m_pSystem->GetDevices();
 
-  // no camera is connected
-  if (!device_infos.size()) {
-    log_info("No arena camera is connected. Waiting for device(s)...");
+  // Wait until the *intended* device is present before connecting. When a
+  // serial is provided we must poll for that specific device to turn up;
+  // otherwise any discovered device will do. Until then we leave the timer
+  // running and try again on the next tick (rather than connecting to the
+  // wrong camera or aborting because the target serial isn't found yet).
+  bool device_available;
+  if (is_passed_serial_) {
+    device_available = std::any_of(
+        device_infos.begin(), device_infos.end(),
+        [this](Arena::DeviceInfo& info) {
+          return serial_ == std::string(info.SerialNumber().c_str());
+        });
+    if (!device_available) {
+      log_info("Waiting for arena camera with serial " + serial_ +
+               " to be connected...");
+    }
+  } else {
+    device_available = device_infos.size() > 0;
+    if (!device_available) {
+      log_info("No arena camera is connected. Waiting for device(s)...");
+    }
   }
-  // at least on is found
-  else {
+
+  if (device_available) {
     m_wait_for_device_timer_callback_->cancel();
     log_info(std::to_string(device_infos.size()) +
              " arena device(s) has been discoved.");
