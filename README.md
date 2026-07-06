@@ -147,6 +147,44 @@ Arena Camera deriver for ROS2
     - To trigger an image run 
       `ros2 run arena_camera_node trigger_image`
 
+# Synchronized capture (PTP + action commands)
+
+Capture several cameras at the same instant in software, with no extra wiring.
+All cameras are PTP-synced to the PC grandmaster, then one node broadcasts scheduled action commands so every camera exposes at the same PTP time.
+Inter-camera capture skew is bounded by the PTP residual (tens of microseconds, well under 1 ms).
+
+Per-camera parameters:
+
+- `trigger_source` - `continuous` (free-run, default), `encoder` (quadrature encoder), or `action` (PTP scheduled action command).
+  Passing the legacy `trigger_mode:=true` is equivalent to `trigger_source:=encoder`.
+- `ptp_enable` - keep PTP on (default `true`) so device image timestamps share the grandmaster clock and stay comparable across cameras.
+- `trigger_coordinator` - set `true` on exactly one camera; it fires the broadcast action commands.
+- `trigger_rate_hz` - capture rate for the coordinator.
+
+Bring up three cameras and record:
+
+```
+# synchronized
+ros2 launch arena_camera_node sync_capture.launch.py \
+    serial_0:=<s0> serial_1:=<s1> serial_2:=<s2> trigger_rate_hz:=10.0 exposure_time:=1000.0
+ros2 bag record -s mcap /cam0/images /cam1/images /cam2/images
+
+# baseline for comparison (free-run, PTP still on)
+ros2 launch arena_camera_node sync_capture.launch.py \
+    serial_0:=<s0> serial_1:=<s1> serial_2:=<s2> trigger_source:=continuous
+ros2 bag record -s mcap /cam0/images /cam1/images /cam2/images
+```
+
+Compare the two recordings (reads each image's `header.stamp`, the device PTP capture time):
+
+```
+python3 tools/sync_analysis/analyze_sync.py synced.mcap baseline.mcap \
+    --topics /cam0/images /cam1/images /cam2/images
+```
+
+The script prints mean/std/median/p95/p99/max of the per-shot inter-camera spread for both recordings and the improvement factor.
+`python3 tools/sync_analysis/analyze_sync.py` with no arguments runs its self-check.
+
 # Road map
 - support windows
 - add -h flag to nodes

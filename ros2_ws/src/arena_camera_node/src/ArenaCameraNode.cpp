@@ -80,8 +80,29 @@ void ArenaCameraNode::parse_parameters_()
     trigger_mode_activated_ = this->declare_parameter("trigger_mode", false);
     // no need to is_passed_trigger_mode_ because it is already a boolean
 
+    nextParameterToDeclare = "trigger_source";
+    trigger_source_ = this->declare_parameter("trigger_source", std::string(""));
+    // Back-compat: legacy `trigger_mode:=true` selects the encoder trigger.
+    if (trigger_source_.empty()) {
+      trigger_source_ = trigger_mode_activated_ ? "encoder" : "continuous";
+    }
+    if (trigger_source_ != "continuous" && trigger_source_ != "encoder" &&
+        trigger_source_ != "action") {
+      throw std::invalid_argument(
+          "trigger_source must be one of: continuous, encoder, action");
+    }
+
     nextParameterToDeclare = "encoder_divider";
     encoder_divider_ = this->declare_parameter("encoder_divider", 65535);
+
+    nextParameterToDeclare = "ptp_enable";
+    ptp_enable_ = this->declare_parameter("ptp_enable", true);
+
+    nextParameterToDeclare = "trigger_coordinator";
+    trigger_coordinator_ = this->declare_parameter("trigger_coordinator", false);
+
+    nextParameterToDeclare = "trigger_rate_hz";
+    trigger_rate_hz_ = this->declare_parameter("trigger_rate_hz", 10.0);
 
     nextParameterToDeclare = "topic";
     topic_ = this->declare_parameter(
@@ -278,13 +299,20 @@ void ArenaCameraNode::run_()
   m_pDevice.reset(device);
   set_nodes_();
   m_pDevice->StartStream();
-  publish_images_();
+
+  // Grab images on a dedicated thread so the executor stays free for the
+  // action-command timer and the trigger service.
+  m_grab_thread_ = std::thread(&ArenaCameraNode::publish_images_, this);
+
+  if (trigger_coordinator_) {
+    setup_action_command_coordinator_();
+  }
 }
 
 void ArenaCameraNode::publish_images_()
 {
   Arena::IImage* pImage = nullptr;
-  while (rclcpp::ok()) {
+  while (rclcpp::ok() && m_running_) {
     try {
       auto p_image_msg = std::make_unique<sensor_msgs::msg::Image>();
       // std::cout << "error 1" << "\n";
@@ -480,6 +508,7 @@ void ArenaCameraNode::set_nodes_()
   set_nodes_gain_();
   set_nodes_pixelformat_();
   set_nodes_trigger_mode_();
+  set_nodes_ptp_();
   set_nodes_exposure_();
 
   // Configure Auto Negotiate Packet Size and Packet Resend
@@ -492,9 +521,10 @@ void ArenaCameraNode::set_nodes_load_default_profile_()
   auto nodemap = m_pDevice->GetNodeMap();
   // device run on default profile all the time if no args are passed
   // otherwise, overwise only these params
-  // If trigger mode is activated need to load in UserSet1 since TriggerSelector LineStart is not an option
-  // within the SDK. This setting must be set on the camera's onboard memory.
-  if (trigger_mode_activated_) {
+  // The encoder trigger needs TriggerSelector LineStart, which is not exposed
+  // via the SDK and must come from the camera's onboard UserSet1. Other modes
+  // (continuous, action) load the Default profile.
+  if (trigger_source_ == "encoder") {
     Arena::SetNodeValue<GenICam::gcstring>(nodemap, "UserSetSelector", "UserSet1");
   } else {
     Arena::SetNodeValue<GenICam::gcstring>(nodemap, "UserSetSelector", "Default");
@@ -594,23 +624,15 @@ void ArenaCameraNode::set_nodes_exposure_()
 void ArenaCameraNode::set_nodes_trigger_mode_()
 {
   auto nodemap = m_pDevice->GetNodeMap();
-  if (trigger_mode_activated_) {
+
+  // Trigger mode must be configured before the stream starts; it cannot be
+  // toggled while the device is streaming.
+  if (trigger_source_ == "encoder") {
     if (exposure_time_ < 0) {
       log_warn(
           "\tavoid long waits wating for triggered images by providing proper "
           "exposure_time.");
     }
-    // Enable trigger mode before setting the source and selector
-    // and before starting the stream. Trigger mode cannot be turned
-    // on and off while the device is streaming.
-
-    // Make sure Trigger Mode set to 'Off' after finishing this example
-
-
-    // Set the trigger source to software in order to trigger buffers
-    // without the use of any additional hardware.
-    // Lines of the GPIO can also be used to trigger.
-
     //NEED TO MOVE TO YAML FILE
     Arena::SetNodeValue<GenICam::gcstring>(nodemap, "AcquisitionMode", "Continuous");
     Arena::SetNodeValue<GenICam::gcstring>(nodemap, "EncoderSelector","Encoder0");
@@ -624,20 +646,87 @@ void ArenaCameraNode::set_nodes_trigger_mode_()
     // Arena::SetNodeValue<GenICam::gcstring>(nodemap, "TriggerSelector", "FrameStart");
     Arena::SetNodeValue<GenICam::gcstring>(nodemap, "TriggerActivation","RisingEdge");
 
-    auto msg =
-        std::string(
-            "\ttrigger_mode is activated. To trigger an image run `ros2 run ") +
-        this->get_name() + " trigger_image`";
-    log_warn(msg);
+    log_warn("\ttrigger_source=encoder (quadrature encoder on Line2/Line3)");
   }
-  // unset device from being in trigger mode if user did not pass trigger
-  // mode parameter because the trigger nodes are not rest when loading
-  // the user default profile
+  // PTP-synchronized capture: every camera waits for a broadcast action
+  // command and exposes at the same scheduled PTP time. See
+  // Cpp_ScheduledActionCommands SDK example.
+  else if (trigger_source_ == "action") {
+    Arena::SetNodeValue<GenICam::gcstring>(nodemap, "AcquisitionMode", "Continuous");
+    Arena::SetNodeValue<GenICam::gcstring>(nodemap, "TriggerSelector", "FrameStart");
+    Arena::SetNodeValue<GenICam::gcstring>(nodemap, "TriggerMode", "On");
+    Arena::SetNodeValue<GenICam::gcstring>(nodemap, "TriggerSource", "Action0");
+
+    // Accept action commands without holding device control, and match the
+    // keys the coordinator broadcasts with.
+    Arena::SetNodeValue<GenICam::gcstring>(nodemap, "ActionUnconditionalMode", "On");
+    Arena::SetNodeValue<int64_t>(nodemap, "ActionSelector", 0);
+    Arena::SetNodeValue<int64_t>(nodemap, "ActionDeviceKey", 1);
+    Arena::SetNodeValue<int64_t>(nodemap, "ActionGroupKey", 1);
+    Arena::SetNodeValue<int64_t>(nodemap, "ActionGroupMask", 1);
+
+    log_warn("\ttrigger_source=action (PTP scheduled action command)");
+  }
+  // continuous / free-run
   else {
     Arena::SetNodeValue<GenICam::gcstring>(nodemap, "TriggerMode", "Off");
+    log_warn("\ttrigger_source=continuous (free-run)");
+  }
+}
 
-    auto msg = std::string("\ttrigger_mode is OFF");
-    log_warn(msg);
+void ArenaCameraNode::set_nodes_ptp_()
+{
+  // Keep PTP enabled by default so device image timestamps share the
+  // grandmaster clock and stay comparable across cameras - this is what makes
+  // both the synchronized and the free-run baseline recordings measurable.
+  auto nodemap = m_pDevice->GetNodeMap();
+  Arena::SetNodeValue<bool>(nodemap, "PtpEnable", ptp_enable_);
+  log_info(std::string("\tPtpEnable set to ") + (ptp_enable_ ? "true" : "false"));
+}
+
+void ArenaCameraNode::setup_action_command_coordinator_()
+{
+  // Configure the system to broadcast action commands. Keys/mask must match
+  // the per-device values set in set_nodes_trigger_mode_(); the target IP
+  // 0xFFFFFFFF broadcasts to every camera on the subnet, including those owned
+  // by the other camera processes.
+  auto system_nodemap = m_pSystem->GetTLSystemNodeMap();
+  Arena::SetNodeValue<int64_t>(system_nodemap, "ActionCommandDeviceKey", 1);
+  Arena::SetNodeValue<int64_t>(system_nodemap, "ActionCommandGroupKey", 1);
+  Arena::SetNodeValue<int64_t>(system_nodemap, "ActionCommandGroupMask", 1);
+  Arena::SetNodeValue<int64_t>(system_nodemap, "ActionCommandTargetIP", 0xFFFFFFFF);
+
+  auto period = std::chrono::duration<double>(1.0 / trigger_rate_hz_);
+  m_action_command_timer_ = this->create_wall_timer(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(period),
+      std::bind(&ArenaCameraNode::fire_scheduled_action_command_, this));
+
+  log_info(std::string("\ttrigger coordinator firing action commands at ") +
+           std::to_string(trigger_rate_hz_) + " Hz");
+}
+
+void ArenaCameraNode::fire_scheduled_action_command_()
+{
+  try {
+    auto nodemap = m_pDevice->GetNodeMap();
+
+    // Read "now" in PTP time from our own device. Latching from an owned
+    // device avoids any epoch/TAI-UTC conversion the OS clock would need.
+    Arena::ExecuteNode(nodemap, "PtpDataSetLatch");
+    int64_t now_ns = Arena::GetNodeValue<int64_t>(nodemap, "PtpDataSetLatchValue");
+
+    // Schedule the capture half a frame ahead: long enough to beat command
+    // propagation, short enough that only one action is pending per camera.
+    // ponytail: half-period lead works for rates up to ~100 Hz; sub-ms periods
+    // would need overlapping/queued scheduling instead.
+    int64_t period_ns = static_cast<int64_t>(1e9 / trigger_rate_hz_);
+    int64_t execute_time_ns = now_ns + period_ns / 2;
+
+    Arena::SetNodeValue<int64_t>(m_pSystem->GetTLSystemNodeMap(),
+                                 "ActionCommandExecuteTime", execute_time_ns);
+    Arena::ExecuteNode(m_pSystem->GetTLSystemNodeMap(), "ActionCommandFireCommand");
+  } catch (std::exception& e) {
+    log_warn(std::string("Failed to fire action command\n") + e.what());
   }
 }
 

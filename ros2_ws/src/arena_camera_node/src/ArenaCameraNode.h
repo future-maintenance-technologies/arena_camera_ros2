@@ -8,8 +8,10 @@
 //
 
 // std
+#include <atomic>
 #include <memory>
 #include <string>
+#include <thread>
 
 // ros
 #include <rclcpp/rclcpp.hpp>
@@ -32,6 +34,17 @@ class ArenaCameraNode : public rclcpp::Node
     parse_parameters_();
     initialize_();
     log_info(std::string("Created \"") + this->get_name() + "\" node");
+  }
+
+  ~ArenaCameraNode()
+  {
+    m_running_ = false;
+    // The grab thread parks in a long GetImage() call; stopping the stream
+    // makes it return so the thread can observe m_running_ and exit.
+    if (m_pDevice) {
+      try { m_pDevice->StopStream(); } catch (...) {}
+    }
+    if (m_grab_thread_.joinable()) m_grab_thread_.join();
   }
 
   void log_debug(std::string msg) { RCLCPP_DEBUG(this->get_logger(), msg.c_str()); }
@@ -72,8 +85,20 @@ class ArenaCameraNode : public rclcpp::Node
   std::string pixelformat_ros_;
   bool        is_passed_pixelformat_ros_;
 
-  bool trigger_mode_activated_;
+  // Trigger selection: "continuous" (free-run), "encoder", or "action" (PTP sync)
+  std::string trigger_source_;
+  bool trigger_mode_activated_;  // legacy bool; true maps to encoder
   int encoder_divider_;
+
+  // PTP + scheduled action command synchronization
+  bool   ptp_enable_;
+  bool   trigger_coordinator_;
+  double trigger_rate_hz_;
+  rclcpp::TimerBase::SharedPtr m_action_command_timer_;
+
+  // Background image grab loop
+  std::thread       m_grab_thread_;
+  std::atomic<bool> m_running_{true};
 
   std::string pub_qos_history_;
   bool        is_passed_pub_qos_history_;
@@ -105,7 +130,12 @@ class ArenaCameraNode : public rclcpp::Node
   void set_nodes_pixelformat_();
   void set_nodes_exposure_();
   void set_nodes_trigger_mode_();
+  void set_nodes_ptp_();
   void set_nodes_test_pattern_image_();
+
+  // Scheduled action command coordinator (fires the synchronized trigger)
+  void setup_action_command_coordinator_();
+  void fire_scheduled_action_command_();
 
   // Streaming
   void publish_images_();
