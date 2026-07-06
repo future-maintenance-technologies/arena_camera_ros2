@@ -98,12 +98,6 @@ void ArenaCameraNode::parse_parameters_()
     nextParameterToDeclare = "ptp_enable";
     ptp_enable_ = this->declare_parameter("ptp_enable", true);
 
-    nextParameterToDeclare = "trigger_coordinator";
-    trigger_coordinator_ = this->declare_parameter("trigger_coordinator", false);
-
-    nextParameterToDeclare = "trigger_rate_hz";
-    trigger_rate_hz_ = this->declare_parameter("trigger_rate_hz", 10.0);
-
     nextParameterToDeclare = "topic";
     topic_ = this->declare_parameter(
         "topic", std::string("/") + this->get_name() + "/images");
@@ -301,12 +295,9 @@ void ArenaCameraNode::run_()
   m_pDevice->StartStream();
 
   // Grab images on a dedicated thread so the executor stays free for the
-  // action-command timer and the trigger service.
+  // trigger service. In action mode the camera waits for the broadcast action
+  // commands fired by the separate sync_trigger node.
   m_grab_thread_ = std::thread(&ArenaCameraNode::publish_images_, this);
-
-  if (trigger_coordinator_) {
-    setup_action_command_coordinator_();
-  }
 }
 
 void ArenaCameraNode::publish_images_()
@@ -682,52 +673,6 @@ void ArenaCameraNode::set_nodes_ptp_()
   auto nodemap = m_pDevice->GetNodeMap();
   Arena::SetNodeValue<bool>(nodemap, "PtpEnable", ptp_enable_);
   log_info(std::string("\tPtpEnable set to ") + (ptp_enable_ ? "true" : "false"));
-}
-
-void ArenaCameraNode::setup_action_command_coordinator_()
-{
-  // Configure the system to broadcast action commands. Keys/mask must match
-  // the per-device values set in set_nodes_trigger_mode_(); the target IP
-  // 0xFFFFFFFF broadcasts to every camera on the subnet, including those owned
-  // by the other camera processes.
-  auto system_nodemap = m_pSystem->GetTLSystemNodeMap();
-  Arena::SetNodeValue<int64_t>(system_nodemap, "ActionCommandDeviceKey", 1);
-  Arena::SetNodeValue<int64_t>(system_nodemap, "ActionCommandGroupKey", 1);
-  Arena::SetNodeValue<int64_t>(system_nodemap, "ActionCommandGroupMask", 1);
-  Arena::SetNodeValue<int64_t>(system_nodemap, "ActionCommandTargetIP", 0xFFFFFFFF);
-
-  auto period = std::chrono::duration<double>(1.0 / trigger_rate_hz_);
-  m_action_command_timer_ = this->create_wall_timer(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(period),
-      std::bind(&ArenaCameraNode::fire_scheduled_action_command_, this));
-
-  log_info(std::string("\ttrigger coordinator firing action commands at ") +
-           std::to_string(trigger_rate_hz_) + " Hz");
-}
-
-void ArenaCameraNode::fire_scheduled_action_command_()
-{
-  try {
-    auto nodemap = m_pDevice->GetNodeMap();
-
-    // Read "now" in PTP time from our own device. Latching from an owned
-    // device avoids any epoch/TAI-UTC conversion the OS clock would need.
-    Arena::ExecuteNode(nodemap, "PtpDataSetLatch");
-    int64_t now_ns = Arena::GetNodeValue<int64_t>(nodemap, "PtpDataSetLatchValue");
-
-    // Schedule the capture half a frame ahead: long enough to beat command
-    // propagation, short enough that only one action is pending per camera.
-    // ponytail: half-period lead works for rates up to ~100 Hz; sub-ms periods
-    // would need overlapping/queued scheduling instead.
-    int64_t period_ns = static_cast<int64_t>(1e9 / trigger_rate_hz_);
-    int64_t execute_time_ns = now_ns + period_ns / 2;
-
-    Arena::SetNodeValue<int64_t>(m_pSystem->GetTLSystemNodeMap(),
-                                 "ActionCommandExecuteTime", execute_time_ns);
-    Arena::ExecuteNode(m_pSystem->GetTLSystemNodeMap(), "ActionCommandFireCommand");
-  } catch (std::exception& e) {
-    log_warn(std::string("Failed to fire action command\n") + e.what());
-  }
 }
 
 // just for debugging

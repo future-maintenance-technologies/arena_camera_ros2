@@ -214,7 +214,33 @@ target_include_directories(${trigger_image}
 
 # MV EXEC to lib dir
 install(TARGETS
-  ${trigger_image} 
+  ${trigger_image}
+    DESTINATION lib/${PROJECT_NAME}
+)
+# -----------------------------------------------------------------------------
+
+#
+# ROS2 RUN SYNC_TRIGGER <>
+#
+# Standalone PTP scheduled-action-command broadcaster (needs the Arena SDK).
+# -----------------------------------------------------------------------------
+
+add_executable(sync_trigger src/sync_trigger.cpp)
+
+target_include_directories(sync_trigger
+  PRIVATE
+    ${arena_sdk_INCLUDE_DIRS}
+)
+
+target_link_libraries(sync_trigger
+  ${rclcpp_TARGETS}
+  ${std_msgs_TARGETS}
+  ${arena_sdk_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+)
+
+install(TARGETS
+  sync_trigger
     DESTINATION lib/${PROJECT_NAME}
 )
 # -----------------------------------------------------------------------------

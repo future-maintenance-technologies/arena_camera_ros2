@@ -90,11 +90,9 @@ class ArenaCameraNode : public rclcpp::Node
   bool trigger_mode_activated_;  // legacy bool; true maps to encoder
   int encoder_divider_;
 
-  // PTP + scheduled action command synchronization
+  // PTP: keep clocks (and therefore image timestamps) comparable across cameras.
+  // The synchronized trigger itself is fired by the separate sync_trigger node.
   bool   ptp_enable_;
-  bool   trigger_coordinator_;
-  double trigger_rate_hz_;
-  rclcpp::TimerBase::SharedPtr m_action_command_timer_;
 
   // Background image grab loop
   std::thread       m_grab_thread_;
@@ -132,10 +130,6 @@ class ArenaCameraNode : public rclcpp::Node
   void set_nodes_trigger_mode_();
   void set_nodes_ptp_();
   void set_nodes_test_pattern_image_();
-
-  // Scheduled action command coordinator (fires the synchronized trigger)
-  void setup_action_command_coordinator_();
-  void fire_scheduled_action_command_();
 
   // Streaming
   void publish_images_();

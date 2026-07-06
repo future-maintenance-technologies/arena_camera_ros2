@@ -1,5 +1,8 @@
 """Bring up three Triton cameras for synchronized (PTP action-command) capture.
 
+A separate sync_trigger node broadcasts the scheduled action commands, so the
+cameras are interchangeable and the trigger has no camera to take down with it.
+
 Synchronized recording (default):
     ros2 launch arena_camera_node sync_capture.launch.py \
         serial_0:=<s0> serial_1:=<s1> serial_2:=<s2>
@@ -11,9 +14,9 @@ Free-run baseline (no trigger sync, PTP still on so timestamps stay comparable):
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
-from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -31,11 +34,7 @@ def generate_launch_description():
 
     trigger_source = LaunchConfiguration("trigger_source")
 
-    # cam0 coordinates, but only when synchronizing (free-run needs no trigger).
-    coordinator = ParameterValue(
-        PythonExpression(["'", trigger_source, "' == 'action'"]), value_type=bool)
-
-    def camera(index, is_coordinator=False):
+    def camera(index):
         return Node(
             package="arena_camera_node",
             executable="arena_camera_node",
@@ -46,13 +45,20 @@ def generate_launch_description():
                 "pixelformat": LaunchConfiguration("pixelformat"),
                 "exposure_time": LaunchConfiguration("exposure_time"),
                 "trigger_source": trigger_source,
-                "trigger_rate_hz": LaunchConfiguration("trigger_rate_hz"),
                 "ptp_enable": True,
-                "trigger_coordinator": coordinator if is_coordinator else False,
                 "topic": f"/cam{index}/images",
             }],
             output="screen",
         )
 
-    nodes = [camera(0, is_coordinator=True), camera(1), camera(2)]
-    return LaunchDescription(args + nodes)
+    # The trigger broadcaster runs only when actually synchronizing.
+    sync_trigger = Node(
+        package="arena_camera_node",
+        executable="sync_trigger",
+        name="sync_trigger",
+        parameters=[{"trigger_rate_hz": LaunchConfiguration("trigger_rate_hz")}],
+        output="screen",
+        condition=IfCondition(PythonExpression(["'", trigger_source, "' == 'action'"])),
+    )
+
+    return LaunchDescription(args + [camera(0), camera(1), camera(2), sync_trigger])
