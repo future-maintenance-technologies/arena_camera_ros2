@@ -1,7 +1,7 @@
 """Bring up three Triton cameras for synchronized (PTP action-command) capture.
 
-A separate sync_trigger node broadcasts the scheduled action commands, so the
-cameras are interchangeable and the trigger has no camera to take down with it.
+A separate high_speed_trigger_node broadcasts the scheduled action commands, so
+the cameras are interchangeable and the trigger has no camera to take down with it.
 
 Synchronized recording (default):
     ros2 launch arena_camera_node sync_capture.launch.py \
@@ -52,13 +52,13 @@ def generate_launch_description():
         )
 
     # The trigger broadcaster runs only when actually synchronizing.
-    sync_trigger = Node(
+    high_speed_trigger = Node(
         package="arena_camera_node",
-        executable="sync_trigger",
-        name="sync_trigger",
+        executable="high_speed_trigger_node",
+        name="high_speed_trigger_node",
         parameters=[{"trigger_rate_hz": LaunchConfiguration("trigger_rate_hz")}],
         output="screen",
         condition=IfCondition(PythonExpression(["'", trigger_source, "' == 'action'"])),
     )
 
-    return LaunchDescription(args + [camera(0), camera(1), camera(2), sync_trigger])
+    return LaunchDescription(args + [camera(0), camera(1), camera(2), high_speed_trigger])

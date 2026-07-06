@@ -91,7 +91,8 @@ class ArenaCameraNode : public rclcpp::Node
   int encoder_divider_;
 
   // PTP: keep clocks (and therefore image timestamps) comparable across cameras.
-  // The synchronized trigger itself is fired by the separate sync_trigger node.
+  // The synchronized trigger itself is fired by the separate
+  // high_speed_trigger_node.
   bool   ptp_enable_;
 
   // Background image grab loop

@@ -18,6 +18,7 @@ Run with no arguments to execute the built-in self-check.
 import argparse
 import bisect
 import statistics
+import struct
 import sys
 
 
@@ -41,6 +42,15 @@ def nearest(sorted_list, x):
     return after if (after - x) < (x - before) else before
 
 
+def _frame_period_ns(sorted_stamps):
+    """Median inter-frame interval (ns) - robust to the occasional dropped
+    frame. Returns 0 if there are fewer than two frames."""
+    if len(sorted_stamps) < 2:
+        return 0
+    return statistics.median(b - a for a, b in
+                             zip(sorted_stamps, sorted_stamps[1:]))
+
+
 def shot_spreads_ns(stamps_by_topic):
     """Per-shot spread (ns): for each reference-topic frame, pair the nearest
     frame from every other topic and take max - min across the matched set."""
@@ -53,6 +63,30 @@ def shot_spreads_ns(stamps_by_topic):
         matched = [t] + [nearest(o, t) for o in others]
         spreads.append(max(matched) - min(matched))
     return spreads
+
+
+def clip_to_common_window(stamps_by_topic):
+    """Cameras are stagger-started (~5s apart), so early in the recording only
+    some topics are publishing. Restrict every topic to the window where ALL
+    topics are active - [max(first stamp), min(last stamp)] - so spreads are
+    only measured while every camera is actually running. Returns
+    (clipped_stamps, (start_ns, end_ns)) or (stamps, None) if any topic is empty.
+
+    A half-frame-period guard band is added to each edge: synced cameras fire
+    the same shot within a few microseconds, so the boundary shot's peer frames
+    can land just outside the strict overlap and get clipped - orphaning the
+    reference frame, which then matches a neighbour a full period away and
+    inflates the spread. The guard keeps sub-period sync jitter while a genuine
+    staggered start (many periods off) is still excluded."""
+    if not all(stamps_by_topic.values()):
+        return stamps_by_topic, None
+    ref = sorted(next(iter(stamps_by_topic.values())))
+    guard = _frame_period_ns(ref) / 2
+    start = max(min(v) for v in stamps_by_topic.values()) - guard
+    end = min(max(v) for v in stamps_by_topic.values()) + guard
+    clipped = {t: [s for s in v if start <= s <= end]
+               for t, v in stamps_by_topic.items()}
+    return clipped, (start, end)
 
 
 def summarize(spreads_ns):
@@ -69,21 +103,42 @@ def summarize(spreads_ns):
     }
 
 
+def _header_stamp_ns(data):
+    """Extract header.stamp (ns) from a CDR-encoded ROS2 message whose first
+    field is a std_msgs/Header (e.g. sensor_msgs/Image, CompressedImage).
+
+    Layout: 4-byte CDR encapsulation header, then builtin_interfaces/Time
+    {int32 sec, uint32 nanosec}. Byte order is taken from the encapsulation
+    header (data[1]: 0x00=big-endian, 0x01=little-endian)."""
+    little_endian = data[1] == 0x01
+    sec, nanosec = struct.unpack_from("<iI" if little_endian else ">iI", data, 4)
+    return sec * 1_000_000_000 + nanosec
+
+
 def read_stamps(mcap_path, topics):
     """Pull header.stamp (device PTP time, ns) for each topic from an MCAP."""
-    import mcap_unpacker as mu
+    from mcap.reader import make_reader
 
-    unpacker = mu.McapUnpacker(mcap_path)
+    wanted = set(topics)
     stamps = {t: [] for t in topics}
-    for msg in unpacker.messages(set(topics)):
-        stamps[msg.topic].append(msg.payload.header.stamp.to_nanoseconds())
+    with open(mcap_path, "rb") as f:
+        reader = make_reader(f)
+        for schema, channel, message in reader.iter_messages(topics=wanted):
+            stamps[channel.topic].append(_header_stamp_ns(message.data))
     return stamps
 
 
 def report(label, stamps_by_topic):
-    counts = {t: len(v) for t, v in stamps_by_topic.items()}
-    s = summarize(shot_spreads_ns(stamps_by_topic))
+    raw_counts = {t: len(v) for t, v in stamps_by_topic.items()}
+    clipped, window = clip_to_common_window(stamps_by_topic)
+    counts = {t: len(v) for t, v in clipped.items()}
+    s = summarize(shot_spreads_ns(clipped))
     print(f"\n== {label} ==")
+    if window:
+        dropped = {t: raw_counts[t] - counts[t] for t in raw_counts}
+        span_s = (window[1] - window[0]) / 1e9
+        print(f"  all-active window: {span_s:.1f}s  "
+              f"(dropped before all cameras started / after first stopped: {dropped})")
     print(f"  frames per topic: {counts}")
     print(f"  shots: {s['shots']}")
     print(f"  spread (us)  mean={s['mean_us']:.1f}  std={s['std_us']:.1f}  "
@@ -97,9 +152,8 @@ def main(argv):
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("synced_mcap")
     ap.add_argument("baseline_mcap", nargs="?")
-    ap.add_argument("--topics", nargs="+", required=True,
-                    help="image topics, one per camera (first is the reference)")
     args = ap.parse_args(argv)
+    args.topics = ['/high_speed_1/lucid_node/images_compressed', '/high_speed_2/lucid_node/images_compressed', '/high_speed_3/lucid_node/images_compressed']
 
     synced = report("synced", read_stamps(args.synced_mcap, args.topics))
     if args.baseline_mcap:
@@ -132,6 +186,17 @@ def _selfcheck():
     assert s["mean_us"] < 5, s
     assert b["mean_us"] > 1000, b
     assert b["mean_us"] > 100 * s["mean_us"], (s, b)
+
+    # staggered start: each camera starts 50 frames (5s @ 10Hz) after the last,
+    # so the first ~100 reference frames have no real peer to match against.
+    # Clipping must drop them and recover the true synced spread.
+    stagger = {f"/cam{c}/images": synced[f"/cam{c}/images"][c * 50:]
+               for c in range(3)}
+    clipped, window = clip_to_common_window(stagger)
+    assert window is not None
+    assert summarize(shot_spreads_ns(clipped))["mean_us"] < 5, "clipping failed"
+    assert summarize(shot_spreads_ns(stagger))["mean_us"] > 5, "stagger not detected"
+
     print(f"selfcheck OK: synced mean {s['mean_us']:.2f}us, "
           f"baseline mean {b['mean_us']:.1f}us")
 

@@ -141,6 +141,7 @@ set(component_name arena_camera_node_component)
 # Build as a shared library so it can be loaded as a composable node
 add_library(${component_name} SHARED
     src/ArenaCameraNode.cpp
+    src/high_speed_trigger_node.cpp
     src/light_arena/deviceinfo_helper.cpp
     src/rclcpp_adapter/pixelformat_translation.cpp
     src/rclcpp_adapter/quilty_of_service_translation.cpp
@@ -168,6 +169,13 @@ target_link_libraries(${component_name}
 rclcpp_components_register_node(${component_name}
   PLUGIN "ArenaCameraNode"
   EXECUTABLE arena_camera_node
+)
+
+# Synchronized-trigger broadcaster, registered from the same library and given
+# its own standalone executable so it runs as an isolated, fast-restarting node.
+rclcpp_components_register_node(${component_name}
+  PLUGIN "HighSpeedTriggerNode"
+  EXECUTABLE high_speed_trigger_node
 )
 
 install(TARGETS
@@ -215,32 +223,6 @@ target_include_directories(${trigger_image}
 # MV EXEC to lib dir
 install(TARGETS
   ${trigger_image}
-    DESTINATION lib/${PROJECT_NAME}
-)
-# -----------------------------------------------------------------------------
-
-#
-# ROS2 RUN SYNC_TRIGGER <>
-#
-# Standalone PTP scheduled-action-command broadcaster (needs the Arena SDK).
-# -----------------------------------------------------------------------------
-
-add_executable(sync_trigger src/sync_trigger.cpp)
-
-target_include_directories(sync_trigger
-  PRIVATE
-    ${arena_sdk_INCLUDE_DIRS}
-)
-
-target_link_libraries(sync_trigger
-  ${rclcpp_TARGETS}
-  ${std_msgs_TARGETS}
-  ${arena_sdk_LIBRARIES}
-  ${OpenCV_LIBRARIES}
-)
-
-install(TARGETS
-  sync_trigger
     DESTINATION lib/${PROJECT_NAME}
 )
 # -----------------------------------------------------------------------------

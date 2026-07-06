@@ -296,7 +296,7 @@ void ArenaCameraNode::run_()
 
   // Grab images on a dedicated thread so the executor stays free for the
   // trigger service. In action mode the camera waits for the broadcast action
-  // commands fired by the separate sync_trigger node.
+  // commands fired by the separate high_speed_trigger_node.
   m_grab_thread_ = std::thread(&ArenaCameraNode::publish_images_, this);
 }
 
@@ -672,6 +672,7 @@ void ArenaCameraNode::set_nodes_ptp_()
   // both the synchronized and the free-run baseline recordings measurable.
   auto nodemap = m_pDevice->GetNodeMap();
   Arena::SetNodeValue<bool>(nodemap, "PtpEnable", ptp_enable_);
+  Arena::SetNodeValue<bool>(nodemap, "PtpSlaveOnly", ptp_enable_);
   log_info(std::string("\tPtpEnable set to ") + (ptp_enable_ ? "true" : "false"));
 }
 

@@ -150,12 +150,12 @@ Arena Camera deriver for ROS2
 # Synchronized capture (PTP + action commands)
 
 Capture several cameras at the same instant in software, with no extra wiring.
-All cameras are PTP-synced to the PC grandmaster, then a standalone `sync_trigger` node broadcasts scheduled action commands so every camera exposes at the same PTP time.
+All cameras are PTP-synced to the PC grandmaster, then a `high_speed_trigger_node` broadcasts scheduled action commands so every camera exposes at the same PTP time.
 Inter-camera capture skew is bounded by the PTP residual (tens of microseconds, well under 1 ms).
 
 The trigger lives in its own node (it owns no camera), so a camera failure does not stop triggering and a trigger failure does not take down a camera.
-`sync_trigger` holds no device and starts no stream, so it restarts almost instantly; while it is down the cameras simply pause and resume in sync once it returns.
-It publishes `~/heartbeat` (a fire counter) so a sensor monitor can watch and restart it.
+`high_speed_trigger_node` holds no device and starts no stream, so it restarts almost instantly; while it is down the cameras simply pause and resume in sync once it returns.
+It publishes `/high_speed_trigger_node/heartbeat` (a fire counter) so a sensor monitor can watch and restart it.
 
 Per-camera parameters:
 
@@ -163,7 +163,7 @@ Per-camera parameters:
   Passing the legacy `trigger_mode:=true` is equivalent to `trigger_source:=encoder`.
 - `ptp_enable` - keep PTP on (default `true`) so device image timestamps share the grandmaster clock and stay comparable across cameras.
 
-`sync_trigger` node parameters:
+`high_speed_trigger_node` parameters:
 
 - `trigger_rate_hz` - capture rate.
 - `ptp_offset_ns` - constant offset (ns) between the PC system clock and the cameras' PTP timebase; default `0`, tune on the rig only if scheduled captures land in the cameras' past/future.

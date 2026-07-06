@@ -1,4 +1,4 @@
-// Standalone synchronized-trigger broadcaster.
+// Synchronized-trigger broadcaster (composable component).
 //
 // Owns no camera. It opens an Arena system and, on a timer, broadcasts a
 // PTP-scheduled action command so every camera in `trigger_source:=action`
@@ -11,16 +11,19 @@
 #include <cstdint>
 
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_components/register_node_macro.hpp>
 #include <std_msgs/msg/u_int64.hpp>
 
 #include "ArenaApi.h"
 
 using namespace std::chrono_literals;
 
-class SyncTriggerNode : public rclcpp::Node
+class HighSpeedTriggerNode : public rclcpp::Node
 {
  public:
-  SyncTriggerNode() : Node("sync_trigger")
+  explicit HighSpeedTriggerNode(
+      const rclcpp::NodeOptions& options = rclcpp::NodeOptions())
+      : Node("high_speed_trigger_node", options)
   {
     setvbuf(stdout, NULL, _IONBF, BUFSIZ);
 
@@ -46,14 +49,14 @@ class SyncTriggerNode : public rclcpp::Node
     auto period = std::chrono::duration<double>(1.0 / trigger_rate_hz_);
     m_timer_ = this->create_wall_timer(
         std::chrono::duration_cast<std::chrono::nanoseconds>(period),
-        std::bind(&SyncTriggerNode::fire_, this));
+        std::bind(&HighSpeedTriggerNode::fire_, this));
 
     RCLCPP_INFO(this->get_logger(),
-                "sync_trigger broadcasting action commands at %.2f Hz",
+                "high_speed_trigger_node broadcasting action commands at %.2f Hz",
                 trigger_rate_hz_);
   }
 
-  ~SyncTriggerNode()
+  ~HighSpeedTriggerNode()
   {
     if (m_pSystem_) Arena::CloseSystem(m_pSystem_);
   }
@@ -94,10 +97,4 @@ class SyncTriggerNode : public rclcpp::Node
   rclcpp::TimerBase::SharedPtr m_timer_;
 };
 
-int main(int argc, char** argv)
-{
-  rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<SyncTriggerNode>());
-  rclcpp::shutdown();
-  return 0;
-}
+RCLCPP_COMPONENTS_REGISTER_NODE(HighSpeedTriggerNode)
