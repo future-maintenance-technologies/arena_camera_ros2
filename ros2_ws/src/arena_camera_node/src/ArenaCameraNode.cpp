@@ -76,15 +76,12 @@ void ArenaCameraNode::parse_parameters_()
 
     // log_info(std::to_string(exposure_time_));
 
-    nextParameterToDeclare = "trigger_mode";
-    trigger_mode_activated_ = this->declare_parameter("trigger_mode", false);
-    // no need to is_passed_trigger_mode_ because it is already a boolean
-
     nextParameterToDeclare = "trigger_source";
     trigger_source_ = this->declare_parameter("trigger_source", std::string(""));
-    // Back-compat: legacy `trigger_mode:=true` selects the encoder trigger.
     if (trigger_source_.empty()) {
-      trigger_source_ = trigger_mode_activated_ ? "encoder" : "continuous";
+      throw std::invalid_argument(
+          "trigger_source is required and must be one of: continuous, "
+          "encoder, action");
     }
     if (trigger_source_ != "continuous" && trigger_source_ != "encoder" &&
         trigger_source_ != "action") {
@@ -394,10 +391,11 @@ void ArenaCameraNode::publish_an_image_on_trigger_(
     std::shared_ptr<std_srvs::srv::Trigger::Request> request /*unused*/,
     std::shared_ptr<std_srvs::srv::Trigger::Response> response)
 {
-  if (!trigger_mode_activated_) {
+  if (trigger_source_ == "continuous") {
     std::string msg =
-        "Failed to trigger image because the device is not in trigger mode."
-        "run `ros2 run arena_camera_node run --ros-args -p trigger_mode:=true`";
+        "Failed to trigger image because the device is not in trigger mode. "
+        "run `ros2 run arena_camera_node run --ros-args -p "
+        "trigger_source:=encoder`";
     log_warn(msg);
     response->message = msg;
     response->success = false;

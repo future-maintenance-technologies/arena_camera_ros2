@@ -87,7 +87,6 @@ class ArenaCameraNode : public rclcpp::Node
 
   // Trigger selection: "continuous" (free-run), "encoder", or "action" (PTP sync)
   std::string trigger_source_;
-  bool trigger_mode_activated_;  // legacy bool; true maps to encoder
   int encoder_divider_;
 
   // PTP: keep clocks (and therefore image timestamps) comparable across cameras.
