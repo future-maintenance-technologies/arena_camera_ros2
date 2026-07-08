@@ -168,17 +168,20 @@ Per-camera parameters:
 - `trigger_rate_hz` - capture rate.
 - `ptp_offset_ns` - constant offset (ns) between the PC system clock and the cameras' PTP timebase; default `0`, tune on the rig only if scheduled captures land in the cameras' past/future.
 
-Bring up three cameras and record:
+Bring up three cameras and record. Start the trigger node once, then each camera in its own shell (repeat the camera command for `cam1`/`<s1>` and `cam2`/`<s2>`):
 
 ```
 # synchronized
-ros2 launch arena_camera_node sync_capture.launch.py \
-    serial_0:=<s0> serial_1:=<s1> serial_2:=<s2> trigger_rate_hz:=10.0 exposure_time:=1000.0
+ros2 run arena_camera_node high_speed_trigger_node --ros-args -p trigger_rate_hz:=10.0
+ros2 run arena_camera_node arena_camera_node --ros-args -r __node:=cam0 \
+    -p serial:=<s0> -p camera_type:=high_speed -p pixelformat:=mono8 \
+    -p exposure_time:=1000.0 -p trigger_source:=action -p ptp_enable:=true -p topic:=/cam0/images
 ros2 bag record -s mcap /cam0/images /cam1/images /cam2/images
 
-# baseline for comparison (free-run, PTP still on)
-ros2 launch arena_camera_node sync_capture.launch.py \
-    serial_0:=<s0> serial_1:=<s1> serial_2:=<s2> trigger_source:=continuous
+# baseline for comparison (free-run, PTP still on) — no trigger node
+ros2 run arena_camera_node arena_camera_node --ros-args -r __node:=cam0 \
+    -p serial:=<s0> -p camera_type:=high_speed -p pixelformat:=mono8 \
+    -p exposure_time:=1000.0 -p trigger_source:=continuous -p ptp_enable:=true -p topic:=/cam0/images
 ros2 bag record -s mcap /cam0/images /cam1/images /cam2/images
 ```
 

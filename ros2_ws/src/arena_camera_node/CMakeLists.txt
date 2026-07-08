@@ -107,12 +107,6 @@ link_directories(
 # LAUNCH FILES
 # -------------
 
-# install launch files.
-install(
-  DIRECTORY launch
-  DESTINATION share/${PROJECT_NAME}/
-)
-
 # --------
 # HEADERS
 # --------
