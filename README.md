@@ -147,6 +147,54 @@ Arena Camera deriver for ROS2
     - To trigger an image run 
       `ros2 run arena_camera_node trigger_image`
 
+# Synchronized capture (PTP + action commands)
+
+Capture several cameras at the same instant in software, with no extra wiring.
+All cameras are PTP-synced to the PC grandmaster, then a `high_speed_trigger_node` broadcasts scheduled action commands so every camera exposes at the same PTP time.
+Inter-camera capture skew is bounded by the PTP residual (tens of microseconds, well under 1 ms).
+
+The trigger lives in its own node (it owns no camera), so a camera failure does not stop triggering and a trigger failure does not take down a camera.
+`high_speed_trigger_node` holds no device and starts no stream, so it restarts almost instantly; while it is down the cameras simply pause and resume in sync once it returns.
+It publishes `/high_speed_trigger_node/heartbeat` (a fire counter) so a sensor monitor can watch and restart it.
+
+Per-camera parameters:
+
+- `trigger_source` - `continuous` (free-run, default), `encoder` (quadrature encoder), or `action` (PTP scheduled action command).
+  Passing the legacy `trigger_mode:=true` is equivalent to `trigger_source:=encoder`.
+- `ptp_enable` - keep PTP on (default `true`) so device image timestamps share the grandmaster clock and stay comparable across cameras.
+
+`high_speed_trigger_node` parameters:
+
+- `trigger_rate_hz` - capture rate.
+- `ptp_offset_ns` - constant offset (ns) between the PC system clock and the cameras' PTP timebase; default `0`, tune on the rig only if scheduled captures land in the cameras' past/future.
+
+Bring up three cameras and record. Start the trigger node once, then each camera in its own shell (repeat the camera command for `cam1`/`<s1>` and `cam2`/`<s2>`):
+
+```
+# synchronized
+ros2 run arena_camera_node high_speed_trigger_node --ros-args -p trigger_rate_hz:=10.0
+ros2 run arena_camera_node arena_camera_node --ros-args -r __node:=cam0 \
+    -p serial:=<s0> -p camera_type:=high_speed -p pixelformat:=mono8 \
+    -p exposure_time:=1000.0 -p trigger_source:=action -p ptp_enable:=true -p topic:=/cam0/images
+ros2 bag record -s mcap /cam0/images /cam1/images /cam2/images
+
+# baseline for comparison (free-run, PTP still on) — no trigger node
+ros2 run arena_camera_node arena_camera_node --ros-args -r __node:=cam0 \
+    -p serial:=<s0> -p camera_type:=high_speed -p pixelformat:=mono8 \
+    -p exposure_time:=1000.0 -p trigger_source:=continuous -p ptp_enable:=true -p topic:=/cam0/images
+ros2 bag record -s mcap /cam0/images /cam1/images /cam2/images
+```
+
+Compare the two recordings (reads each image's `header.stamp`, the device PTP capture time):
+
+```
+python3 tools/sync_analysis/analyze_sync.py synced.mcap baseline.mcap \
+    --topics /cam0/images /cam1/images /cam2/images
+```
+
+The script prints mean/std/median/p95/p99/max of the per-shot inter-camera spread for both recordings and the improvement factor.
+`python3 tools/sync_analysis/analyze_sync.py` with no arguments runs its self-check.
+
 # Road map
 - support windows
 - add -h flag to nodes
